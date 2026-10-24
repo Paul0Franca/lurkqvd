@@ -9,7 +9,7 @@ mova o que estiver em "Não lançado" para uma seção `## [X.Y.Z] - AAAA-MM-DD`
 
 ## [Não lançado]
 
-## [0.1.0] - 2026-10-23
+## [0.1.0] - 2026-10-24
 
 Primeira versão pública.
 
