@@ -6,3 +6,15 @@ Este produto é distribuído sob a Apache License, Version 2.0 (arquivo LICENSE)
 O LurkQVD é um projeto independente, sem vínculo com a QlikTech International AB (Qlik), nem patrocinado,
 endossado ou certificado por ela. Qlik, Qlik Cloud, Qlik Sense, QlikView e QVD são marcas da QlikTech
 International AB; aparecem aqui só para dizer com que produtos e formato o LurkQVD funciona.
+
+Componentes de terceiros
+------------------------
+O LurkQVD usa bibliotecas de código aberto, cada uma sob a sua própria licença (a maioria MIT, BSD ou Apache 2.0;
+a lista completa está em requirements.txt e front/package-lock.json). Destaques:
+
+- Microsoft ODBC Driver 18 for SQL Server (msodbcsql18): incluído na imagem Docker da API e do worker, instalado
+  do repositório oficial da Microsoft. É software da Microsoft sob licença própria, não open source; quem usa a
+  imagem fica sujeito aos termos dessa licença.
+- psycopg e psycopg-binary: LGPL-3.0, usados sem modificação (código-fonte em https://github.com/psycopg/psycopg).
+- Fonte Sora (@fontsource/sora), embutida no front: SIL Open Font License 1.1.
+- certifi e lightningcss (este só no build do front): Mozilla Public License 2.0, usados sem modificação.

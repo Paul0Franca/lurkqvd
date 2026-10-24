@@ -81,7 +81,7 @@ flowchart LR
 ### 1. Baixe e configure
 
 ```bash
-git clone https://github.com/<sua-org>/lurkqvd.git
+git clone https://github.com/Paul0Franca/lurkqvd.git
 cd lurkqvd
 cp .env.example .env
 ```
@@ -105,7 +105,7 @@ Com as imagens publicadas (mais rápido, nada é compilado na máquina), informe
 (a lista de versões e o que mudou em cada uma estão nos [releases](../../releases) e no [CHANGELOG](CHANGELOG.md)):
 
 ```bash
-LURKQVD_IMAGEM=ghcr.io/<sua-org>/lurkqvd
+LURKQVD_IMAGEM=ghcr.io/paul0franca/lurkqvd
 LURKQVD_VERSAO=0.1.0
 ```
 
@@ -208,7 +208,7 @@ Tudo pelo `.env` (veja os comentários em [`.env.example`](.env.example)). O res
 | `POSTGRES_PASSWORD` | — (obrigatória) | senha do Postgres do docker compose |
 | `LURKQVD_FERNET_KEY` | — (obrigatória) | chave dos segredos; várias separadas por vírgula = rotação |
 | `LURKQVD_PORTA` | `8080` | porta do LurkQVD na máquina |
-| `LURKQVD_IMAGEM` | `lurkqvd` | imagem da API e do worker (o front usa a mesma com `-web`); ex.: `ghcr.io/<sua-org>/lurkqvd` |
+| `LURKQVD_IMAGEM` | `lurkqvd` | imagem da API e do worker (o front usa a mesma com `-web`); ex.: `ghcr.io/paul0franca/lurkqvd` |
 | `LURKQVD_VERSAO` | `local` | versão das imagens; `local` = compilada com `--build` |
 | `LURKQVD_URL_APP` | `http://localhost:8080` | endereço público, usado nos links dos e-mails |
 | `LURKQVD_ADMIN_SENHA` | sorteada | senha inicial do admin padrão |
