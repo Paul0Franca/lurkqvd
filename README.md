@@ -8,6 +8,11 @@ transformação não consomem o seu tenant.
 
 [![Licença: Apache 2.0](https://img.shields.io/badge/licen%C3%A7a-Apache%202.0-blue.svg)](LICENSE)
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/painel-escuro.png">
+  <img src="docs/img/painel.png" alt="Painel do LurkQVD: cargas rodando, status do worker e da Qlik Cloud, execuções por dia e atividade recente">
+</picture>
+
 ---
 
 ## Sumário
@@ -46,6 +51,17 @@ transformação não consomem o seu tenant.
 
 Bancos de origem: **SQL Server** e **PostgreSQL** (beta: testado contra um Postgres de teste, ainda com pouco uso
 real; tipos sem equivalente no QVD, como uuid, json, arrays e bytea, viram texto). MySQL e Oracle estão previstos.
+
+### Telas
+
+| | |
+|---|---|
+| ![Execução ao vivo: fase, linhas lidas, velocidade e previsão de término](docs/img/execucao.png) | ![Cargas agrupadas pelo app da Qlik que alimentam](docs/img/cargas.png) |
+| **Execução ao vivo:** fase, linhas lidas, velocidade, previsão e cancelamento. | **Cargas por aplicação:** cada app da Qlik com as cargas que o alimentam. |
+| ![Aplicação: cargas ligadas ao app e histórico de recargas](docs/img/aplicacao.png) | ![Composição do QVD: quanto cada coluna pesa no arquivo](docs/img/composicao.png) |
+| **Aplicação:** roda as cargas e só recarrega o app se todas derem certo. | **Composição do QVD:** quanto cada coluna pesa no arquivo e na cota. |
+
+<sub>Dados fictícios, de uma instalação de demonstração.</sub>
 
 ## Como funciona
 
