@@ -22,6 +22,7 @@ transformação não consomem o seu tenant.
 - [Segurança](#segurança)
 - [Desenvolvimento](#desenvolvimento)
 - [Ideias futuras](#ideias-futuras)
+- [Contribuindo](#contribuindo)
 - [Licença](#licença)
 
 ---
@@ -369,6 +370,12 @@ Ainda não estão no plano de nenhuma versão; ficam aqui para discussão (abra 
   para a completa quando a consulta ou as colunas mudam. Alternativa sem juntar nada: um QVD por mês, regerando só
   o atual (exige `LOAD * FROM [tabela_*.qvd]` no app).
 - **Outras fontes de dados**: MySQL e Oracle (a estrutura de drivers em `config/fontes.py` já prevê).
+
+## Contribuindo
+
+Contribuições são bem-vindas: relatos de bug, ideias, documentação e código. Veja o
+[CONTRIBUTING.md](CONTRIBUTING.md) para preparar o ambiente, os padrões do projeto e como abrir um pull request.
+Ao participar, siga o [Código de Conduta](CODE_OF_CONDUCT.md).
 
 ## Licença
 

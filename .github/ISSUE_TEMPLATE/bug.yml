@@ -1,0 +1,59 @@
+name: Bug
+description: Algo não funciona como deveria
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por reportar! **Falha de segurança não vai aqui:** veja o SECURITY.md.
+        Antes de colar logs, confira se não há senhas, tokens ou dados da sua empresa neles.
+  - type: textarea
+    id: o_que_aconteceu
+    attributes:
+      label: O que aconteceu
+      description: O que você fez, o que esperava e o que aconteceu de fato.
+    validations:
+      required: true
+  - type: textarea
+    id: como_reproduzir
+    attributes:
+      label: Como reproduzir
+      placeholder: |
+        1. Cadastrar uma carga com ...
+        2. Executar ...
+        3. Ver o erro ...
+    validations:
+      required: true
+  - type: input
+    id: versao
+    attributes:
+      label: Versão do LurkQVD
+      description: Aparece no menu do usuário e em /health.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: instalacao
+    attributes:
+      label: Como está instalado
+      options:
+        - Docker Compose com as imagens publicadas
+        - Docker Compose compilado do código (--build)
+        - Rodando local (desenvolvimento)
+        - Outro
+    validations:
+      required: true
+  - type: dropdown
+    id: fonte
+    attributes:
+      label: Fonte de dados
+      options:
+        - SQL Server
+        - PostgreSQL
+        - Não se aplica
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Trecho do log da API ou do worker (docker compose logs api / worker).
+      render: text

@@ -1,0 +1,36 @@
+# Atualizações automáticas de dependências: um PR por ecossistema por semana, com as atualizações agrupadas.
+# O CI roda em cada PR; só faça o merge com tudo verde.
+
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /front
+    schedule:
+      interval: weekly
+    groups:
+      front:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directories: ["/", "/front"]
+    schedule:
+      interval: weekly
+    groups:
+      imagens:
+        patterns: ["*"]
