@@ -1,0 +1,32 @@
+# ---- Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# ---- Front
+front/node_modules/
+front/dist/
+
+# ---- Configuração local e segredos (NUNCA versionar)
+.env
+.env.*
+!.env.example
+front/.env.local
+*_creds.json
+*.creds.json
+credentials*.json
+admin_senha_inicial.txt
+
+# ---- Dados: QVDs e extrações não vão para o repositório
+tmp_qvd/
+*.qvd
+*.csv
+*.parquet
+
+# ---- IDE e sistema
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

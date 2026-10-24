@@ -1,0 +1,10 @@
+# só o necessário vai para a imagem (src, db, requirements.txt, docker/)
+**
+!src/**
+!db/**
+!docker/**
+!requirements.txt
+**/__pycache__
+**/*.pyc
+**/*.qvd
+**/*.csv

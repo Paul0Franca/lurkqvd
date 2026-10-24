@@ -1,0 +1,31 @@
+# Desenvolvimento: só o Postgres, na porta 5433 da sua máquina. A API, o worker e o front rodam
+# direto no seu ambiente (veja "Desenvolvimento" no README).
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   python -m src.lurkqvd.cli migrar
+#
+# Senha fixa aqui só porque é local.
+
+name: lurkqvd-dev
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: lurkqvd-postgres
+    environment:
+      POSTGRES_DB: lurkqvd
+      POSTGRES_USER: lurkqvd
+      POSTGRES_PASSWORD: lurkqvd_dev
+      TZ: America/Sao_Paulo
+    ports:
+      - "127.0.0.1:5433:5432"   # só na sua máquina; 5433 para não colidir com outro Postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lurkqvd -d lurkqvd"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+    name: lurkqvd_lurkqvd_pgdata   # nome fixo: os dados continuam os mesmos se o projeto mudar de nome

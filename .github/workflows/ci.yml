@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:  # o release roda a mesma verificação antes de publicar
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: API e worker (testes)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Driver ODBC (biblioteca do sistema usada pelo pyodbc)
+        run: sudo apt-get update && sudo apt-get install -y unixodbc
+      - run: pip install -r requirements-dev.txt
+      - name: Testes
+        env:
+          LURKQVD_TESTE_PG: postgresql://postgres:postgres@localhost:5432/postgres
+        run: pytest
+
+  frontend:
+    name: Front (lint e build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: front
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  docker:
+    name: Imagens Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t lurkqvd:ci .
+      - run: docker build -t lurkqvd-web:ci front

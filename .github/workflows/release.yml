@@ -1,0 +1,110 @@
+# Release: ao empurrar uma tag vX.Y.Z, testa, publica as imagens no GitHub Container Registry e cria o release.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Imagens: ghcr.io/<dono do repositório>/lurkqvd (API e worker) e .../lurkqvd-web (front + nginx),
+# com as tags X.Y.Z, X.Y e latest. As notas do release saem da seção da versão no CHANGELOG.md.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  versao:
+    name: Conferir a versão
+    runs-on: ubuntu-latest
+    outputs:
+      versao: ${{ steps.v.outputs.versao }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Tag, código, front e CHANGELOG com a mesma versão
+        run: |
+          versao="${GITHUB_REF_NAME#v}"
+          codigo=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/lurkqvd/__init__.py)
+          front=$(node -p "require('./front/package.json').version")
+          echo "tag $versao · código $codigo · front $front"
+          [ "$versao" = "$codigo" ] || { echo "::error::__version__ em src/lurkqvd/__init__.py é $codigo, a tag é $versao"; exit 1; }
+          [ "$versao" = "$front" ] || { echo "::error::version em front/package.json é $front, a tag é $versao"; exit 1; }
+          grep -q "^## \[$versao\]" CHANGELOG.md || { echo "::error::CHANGELOG.md sem a seção ## [$versao]"; exit 1; }
+          echo "versao=$versao" >> "$GITHUB_OUTPUT"
+
+  verificar:
+    name: Testes
+    needs: versao
+    uses: ./.github/workflows/ci.yml
+
+  publicar:
+    name: Imagens e release
+    needs: [versao, verificar]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # criar o release
+      packages: write   # publicar no ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Nome das imagens (o ghcr.io exige minúsculas)
+        id: nome
+        run: echo "base=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - id: meta_api
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.nome.outputs.base }}/lurkqvd
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta_api.outputs.tags }}
+          labels: ${{ steps.meta_api.outputs.labels }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - id: meta_web
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.nome.outputs.base }}/lurkqvd-web
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: front
+          push: true
+          tags: ${{ steps.meta_web.outputs.tags }}
+          labels: ${{ steps.meta_web.outputs.labels }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Release com as notas do CHANGELOG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSAO: ${{ needs.versao.outputs.versao }}
+        run: |
+          awk -v v="$VERSAO" '/^## \[/{dentro = index($0, "[" v "]") > 0; next} dentro' CHANGELOG.md > notas.md
+          cat >> notas.md <<EOF
+
+          ### Imagens
+          \`\`\`
+          ${{ steps.nome.outputs.base }}/lurkqvd:$VERSAO
+          ${{ steps.nome.outputs.base }}/lurkqvd-web:$VERSAO
+          \`\`\`
+          EOF
+          gh release create "$GITHUB_REF_NAME" --title "LurkQVD $VERSAO" --notes-file notas.md

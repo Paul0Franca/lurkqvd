@@ -1,0 +1,30 @@
+# Dependências do LurkQVD (API e worker). Python 3.12.
+# Versões fixas: as mesmas testadas. Para atualizar, troque aqui e rode a suíte de verificação do README.
+
+# API
+fastapi==0.146.0
+starlette==1.9.0
+uvicorn==0.54.0
+pydantic==2.14.1
+
+# Banco de metadados (Postgres)
+psycopg[binary]==3.3.6
+
+# Leitura do banco de origem e geração do QVD
+SQLAlchemy==2.1.5
+pyodbc==5.3.0
+arrow-odbc==10.6.0
+connectorx==0.4.6
+polars==2.0.0
+pyarrow==26.0.0
+numpy==2.5.4
+qvdrs==0.7.1
+
+# Qlik Cloud, agendamento, segredos e utilidades
+requests==2.34.2
+urllib3==2.8.0
+cronsim==2.7
+tzdata==2026.5    # base de fusos para o zoneinfo (Windows e imagens slim não trazem)
+cryptography==50.0.2
+python-dotenv==1.2.4
+psutil==7.2.2

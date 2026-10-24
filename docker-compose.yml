@@ -1,0 +1,80 @@
+# LurkQVD completo: Postgres, API, worker e web (front + proxy da API).
+#
+#   cp .env.example .env      # e preencha POSTGRES_PASSWORD e LURKQVD_FERNET_KEY
+#   docker compose up -d --build
+#   docker compose logs api   # login e senha inicial do admin, na primeira subida
+#
+# Com as imagens publicadas (sem compilar): LURKQVD_IMAGEM e LURKQVD_VERSAO no .env, e então
+#   docker compose pull && docker compose up -d
+#
+# Abra http://localhost:8080 (ou a porta de LURKQVD_PORTA). Detalhes no README.
+
+name: lurkqvd
+
+x-lurkqvd: &lurkqvd
+  build: .
+  image: ${LURKQVD_IMAGEM:-lurkqvd}:${LURKQVD_VERSAO:-local}
+  env_file: .env
+  environment:
+    LURKQVD_PG_DSN: postgresql://lurkqvd:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}@postgres:5432/lurkqvd
+    LURKQVD_URL_APP: ${LURKQVD_URL_APP:-http://localhost:8080}
+    # os workers desta instalação dividem a RAM desta máquina (a reserva de memória da fila soma os dois)
+    LURKQVD_MAQUINA: ${LURKQVD_MAQUINA:-servidor}
+    LURKQVD_FUSO: ${LURKQVD_FUSO:-America/Sao_Paulo}
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: lurkqvd
+      POSTGRES_USER: lurkqvd
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      TZ: ${LURKQVD_FUSO:-America/Sao_Paulo}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lurkqvd -d lurkqvd"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    # sem "ports": o banco só é acessível de dentro da rede do compose
+
+  api:
+    <<: *lurkqvd
+    command: ["api"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    <<: *lurkqvd
+    command: ["worker"]
+    volumes:
+      # QVDs em trabalho e os guardados para reenvio quando o upload falha
+      - qvd_trabalho:/app/tmp_qvd
+    depends_on:
+      api:
+        condition: service_healthy  # a API aplica as migrações primeiro
+    stop_grace_period: 2m  # deixa terminar a gravação do progresso ao parar
+
+  web:
+    build: ./front
+    image: ${LURKQVD_IMAGEM:-lurkqvd}-web:${LURKQVD_VERSAO:-local}
+    ports:
+      - "${LURKQVD_PORTA:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  qvd_trabalho:

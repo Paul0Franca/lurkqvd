@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 31 172 172">
+  <!-- Sub-logo do LurkQVD sem fundo. Os olhos são recortes (mostram a cor da aba),
+       e o bichinho troca de cor conforme o tema do navegador. -->
+  <style>
+    .forma { fill: #121417; }
+    @media (prefers-color-scheme: dark) { .forma { fill: #F2F1EC; } }
+  </style>
+  <defs>
+    <mask id="olhos">
+      <rect x="0" y="0" width="200" height="200" fill="#fff" />
+      <circle cx="110" cy="84" r="11" fill="#000" />
+      <circle cx="136" cy="84" r="11" fill="#000" />
+    </mask>
+  </defs>
+  <path class="forma" d="M50 112 A50 50 0 0 1 150 112 Z" mask="url(#olhos)" />
+  <rect x="22" y="110" width="156" height="14" rx="7" fill="#22D3EE" />
+  <rect x="22" y="134" width="118" height="14" rx="7" fill="#22D3EE" opacity="0.6" />
+  <rect x="22" y="158" width="78" height="14" rx="7" fill="#22D3EE" opacity="0.35" />
+</svg>
