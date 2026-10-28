@@ -20,6 +20,10 @@ mova o que estiver em "Não lançado" para uma seção `## [X.Y.Z] - AAAA-MM-DD`
 - Percentual da leitura: a contagem da última execução só vale como previsão se a consulta e a fonte não
   mudaram depois dela; senão volta para a estimativa do banco (antes a barra parava no meio).
 - O log do worker mostra o pico de memória de cada fase da carga (lendo, gerando, enviando).
+- Leitura com arrow-odbc: `LURKQVD_PACKET_SIZE` passa a valer 32767 por padrão (o maior que o SQL Server
+  aceita). Na tabela de 16,9 milhões de linhas, a leitura foi de 628 s para 548 s, com o mesmo uso de CPU.
+  `LURKQVD_PACKET_SIZE=0` volta ao padrão do driver.
+- `scripts/medir_paralelo.py` lê com o mesmo buffer e o mesmo pacote de rede da carga.
 
 ### Adicionado
 - `scripts/medir_escritor.py`: tempo e memória do gerador de QVD com uma tabela sintética.
