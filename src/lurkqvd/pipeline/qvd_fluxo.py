@@ -26,6 +26,14 @@ viram um símbolo só, com o texto até o segundo). Para seguir qualquer regra d
 QVD por coluna que ele escreve (um valor distinto por linha) é lido de volta: o índice desse arquivo
 diz qual símbolo do qvdrs corresponde a cada valor distinto daqui — é a "tradução" usada ao montar
 o índice final.
+
+Colunas com valores distintos demais (ex.: um ID por linha) não cabem bem na tabela valor -> posição
+do Python (~100 bytes por valor). Passado um limite (DISTINTOS_PYTHON, e só se os distintos forem uma
+boa parte das linhas), a coluna passa a guardar os valores brutos de cada lote num arquivo temporário
+(Arrow IPC, comprimido). No fim, o Arrow codifica esse trecho de uma vez (dictionary_encode, ordem da
+primeira aparição) e as posições são casadas com as dos lotes anteriores: o resultado é o mesmo do
+caminho pelo Python, com bem menos memória. Ponto flutuante fica de fora (o Python junta 0.0 e -0.0,
+o Arrow não).
 """
 
 from __future__ import annotations
@@ -47,6 +55,12 @@ CODEC = "zstd"
 # colunas de texto com mais valores distintos que isso têm os símbolos escritos aqui, direto
 # para o disco (o qvdrs montaria um array com todos eles na memória de uma vez)
 LIMITE_TEXTO_DIRETO = 50_000
+# a partir de quantos valores distintos uma coluna sai da tabela do Python e passa a guardar os valores
+# brutos em disco (só se eles forem ao menos PROPORCAO_DISTINTOS das linhas lidas até ali)
+DISTINTOS_PYTHON = int(os.getenv("LURKQVD_DISTINTOS_PYTHON", "1000000"))
+PROPORCAO_DISTINTOS = 0.3
+# símbolos de uma coluna acima disso vão para um arquivo temporário até a montagem (não ficam na memória)
+SIMBOLOS_EM_DISCO = 64 * 1024 * 1024
 _FIM_CABECALHO = b"</QvdTableHeader>"
 
 
@@ -58,6 +72,11 @@ class _Coluna:
     valores: list = field(default_factory=list)    # símbolos na ordem da primeira aparição
     tem_nulo: bool = False
     pedacos: list = field(default_factory=list)    # (offset, bytes, bytes_originais, dtype, linhas)
+    # modo bruto (muitos distintos): valores dos lotes seguintes vão para um arquivo Arrow
+    bruto: object = None                           # pa.ipc writer aberto
+    bruto_arquivo: tuple | None = None             # (caminho, arquivo aberto)
+    bruto_tipo: pa.DataType | None = None
+    anteriores: pa.Array | None = None             # símbolos vistos antes de entrar no modo bruto
 
 
 class EscritorQvdFluxo:
@@ -74,6 +93,7 @@ class EscritorQvdFluxo:
         self._tmp = Path(tempfile.mkdtemp(prefix="lurkqvd_fluxo_", dir=dir_temp))
         self._indices = open(self._tmp / "indices.bin", "w+b")
         self._fim_indices = 0  # onde o próximo pedaço começa (evita um seek por pedaço)
+        self._brutos: list[_Coluna] = []  # colunas no modo bruto (valores em disco)
         self._colunas: list[_Coluna] | None = None
         self.linhas = 0
         self._lotes: list[int] = []  # linhas de cada lote (o índice é remontado na mesma divisão)
@@ -103,7 +123,14 @@ class EscritorQvdFluxo:
                 arr, texto_largo = pa.nulls(len(arr), col.tipo), False
             elif tipo_arr != col.tipo:
                 arr, texto_largo = arr.cast(col.tipo), False
+            if col.bruto is not None:
+                self._guardar_bruto(col, arr)
+                continue
             self._gravar_posicoes(col, arr, texto_largo)
+            if (len(col.valores) > DISTINTOS_PYTHON
+                    and len(col.valores) > PROPORCAO_DISTINTOS * (self.linhas + lote.height)
+                    and _aceita_bruto(col.tipo)):
+                self._passar_para_bruto(col)
 
         self.linhas += lote.height
         self._lotes.append(lote.height)
@@ -133,6 +160,72 @@ class EscritorQvdFluxo:
                 col.tem_nulo = True
                 pos1 = mapa1[ind.fill_null(0).to_numpy()]
                 pos1[ind.is_null().to_numpy(zero_copy_only=False)] = 0
+        self._gravar_pedaco(col, pos1)
+
+    def _passar_para_bruto(self, col: _Coluna) -> None:
+        """A coluna deixa a tabela do Python: o que já foi visto vira um array Arrow e os próximos
+        lotes guardam os valores brutos em disco."""
+        col.anteriores = pa.array(col.valores, type=col.tipo)
+        col.valores, col.posicoes = [], {}
+        col.bruto_tipo = pa.large_string() if pa.types.is_string(col.tipo) else col.tipo
+        caminho = self._tmp / f"bruto_{len(self._brutos)}.arrow"
+        arquivo = pa.OSFile(str(caminho), "wb")
+        col.bruto = pa.ipc.new_stream(arquivo, pa.schema([("v", col.bruto_tipo)]),
+                                      options=pa.ipc.IpcWriteOptions(compression="lz4"))
+        col.bruto_arquivo = (caminho, arquivo)
+        self._brutos.append(col)
+
+    def _guardar_bruto(self, col: _Coluna, arr: pa.Array) -> None:
+        if arr.null_count:
+            col.tem_nulo = True
+        if arr.type != col.bruto_tipo:
+            arr = arr.cast(col.bruto_tipo)
+        col.bruto.write_batch(pa.record_batch([arr], names=["v"]))
+
+    def _resolver_bruto(self, col: _Coluna) -> None:
+        """Codifica os valores brutos de uma vez e grava as posições dos lotes do modo bruto no
+        mesmo formato dos outros (pedacos). Símbolos: os de antes + os novos, na ordem de aparição."""
+        caminho, arquivo = col.bruto_arquivo
+        col.bruto.close()
+        arquivo.close()
+        col.bruto = None
+        with pa.memory_map(str(caminho)) as fonte:
+            bruto = pa.ipc.open_stream(fonte).read_all().column(0).combine_chunks()
+        caminho.unlink()
+        cod = pc.dictionary_encode(bruto)
+        del bruto
+        dicionario = cod.dictionary
+        if dicionario.type != col.tipo:
+            dicionario = dicionario.cast(col.tipo)
+        anteriores = col.anteriores
+        n0 = len(anteriores)
+        if n0:
+            achado = pc.index_in(dicionario, value_set=anteriores)
+            novo = achado.is_null().to_numpy(zero_copy_only=False)
+            pos = achado.fill_null(0).to_numpy().astype(np.int64)
+        else:
+            novo = np.ones(len(dicionario), dtype=bool)
+            pos = np.zeros(len(dicionario), dtype=np.int64)
+        pos[novo] = n0 + np.arange(int(novo.sum()), dtype=np.int64)
+        col.valores = pa.concat_arrays([anteriores, dicionario.filter(pa.array(novo))])
+        col.anteriores = None
+
+        mapa1 = pos + 1
+        maior = int(mapa1.max(initial=0))
+        mapa1 = mapa1.astype(np.uint8 if maior < 2**8 else np.uint16 if maior < 2**16 else np.uint32)
+        ind = cod.indices
+        if ind.null_count == 0:
+            pos1 = mapa1[ind.to_numpy()]
+        else:
+            pos1 = mapa1[ind.fill_null(0).to_numpy()]
+            pos1[ind.is_null().to_numpy(zero_copy_only=False)] = 0
+        del cod, ind
+        inicio = 0
+        for n in self._lotes[len(col.pedacos):]:
+            self._gravar_pedaco(col, pos1[inicio:inicio + n])
+            inicio += n
+
+    def _gravar_pedaco(self, col: _Coluna, pos1: np.ndarray) -> None:
         bruto = pos1.tobytes()
         comprimido = pa.compress(bruto, codec=CODEC, asbytes=True)
         self._indices.write(comprimido)
@@ -150,6 +243,10 @@ class EscritorQvdFluxo:
         cols = self._colunas
         for c in cols:
             c.posicoes = {}  # a tabela valor -> posição só serve durante a leitura: libera já
+        self._indices.seek(0, os.SEEK_END)
+        for c in cols:
+            if c.bruto is not None:
+                self._resolver_bruto(c)
 
         # símbolos e cabeçalho de cada coluna, escritos pelo qvdrs a partir dos valores distintos
         meta = [self._simbolos_pelo_qvdrs(c, i) for i, c in enumerate(cols)]
@@ -207,10 +304,15 @@ class EscritorQvdFluxo:
         tipo = col.tipo or pa.string()
         if permitir_direto and pa.types.is_string(tipo) and len(col.valores) > LIMITE_TEXTO_DIRETO:
             return self._simbolos_texto_direto(col, i)
-        valores = col.valores + ([None] if col.tem_nulo else [])
-        if not valores:
-            valores = [None]
-        arr = pa.array(valores, type=tipo)
+        if isinstance(col.valores, pa.Array):  # veio do modo bruto
+            arr = col.valores
+            if col.tem_nulo or len(arr) == 0:
+                arr = pa.concat_arrays([arr, pa.nulls(1, arr.type)])
+        else:
+            valores = col.valores + ([None] if col.tem_nulo else [])
+            if not valores:
+                valores = [None]
+            arr = pa.array(valores, type=tipo)
         caminho = self._tmp / f"coluna_{i}.qvd"
         qvd.write_arrow(pa.table({col.nome: arr}), str(caminho), table_name=self.tabela)
         dados = caminho.read_bytes()
@@ -251,10 +353,16 @@ class EscritorQvdFluxo:
             largura = 1
             bloco = _trocar(bloco, BitWidth=1)
         col.valores = []  # já viraram símbolos: libera
+        simbolos, arquivo = dados[base + ini: base + ini + tam], None
+        if tam > SIMBOLOS_EM_DISCO:  # muitos símbolos: esperam a montagem no disco, não na memória
+            arquivo = self._tmp / f"simbolos_{i}.bin"
+            arquivo.write_bytes(simbolos)
+            simbolos = None
+        del dados
         return {
             "bloco": bloco,
-            "simbolos": dados[base + ini: base + ini + tam],
-            "arquivo": None,
+            "simbolos": simbolos,
+            "arquivo": arquivo,
             "tamanho": tam,
             "largura": largura,
             "n": n,
@@ -265,13 +373,13 @@ class EscritorQvdFluxo:
         """Texto com muitos valores: símbolo = 0x04 + UTF-8 + 0x00, gravado em disco aos poucos.
         O bloco do cabeçalho vem do qvdrs com uma amostra (mesmo tipo e tags) e recebe os números reais."""
         n = len(col.valores)
-        amostra = _Coluna(col.nome, tipo=pa.string(), valores=col.valores[:3], tem_nulo=col.tem_nulo)
+        amostra = _Coluna(col.nome, tipo=pa.string(), valores=_lista(col.valores[:3]), tem_nulo=col.tem_nulo)
         bloco = self._simbolos_pelo_qvdrs(amostra, i, permitir_direto=False)["bloco"]
         arquivo = self._tmp / f"simbolos_{i}.bin"
         tamanho = 0
         with open(arquivo, "wb") as f:
             for k in range(0, n, 200_000):
-                parte = b"".join(b"\x04" + v.encode("utf-8") + b"\x00" for v in col.valores[k:k + 200_000])
+                parte = b"".join(b"\x04" + v.encode("utf-8") + b"\x00" for v in _lista(col.valores[k:k + 200_000]))
                 f.write(parte)
                 tamanho += len(parte)
         col.valores = []
@@ -330,6 +438,14 @@ class EscritorQvdFluxo:
 
     # ------------------------------------------------------------------ #
     def descartar(self) -> None:
+        for col in self._brutos:
+            if col.bruto is not None:
+                try:
+                    col.bruto.close()
+                    col.bruto_arquivo[1].close()
+                except Exception:
+                    pass
+                col.bruto = None
         try:
             self._indices.close()
         finally:
@@ -374,6 +490,19 @@ def _largura(n: int, tem_nulo: bool) -> int:
 
 def _valor(xml: str, tag: str) -> str:
     return re.search(rf"<{tag}>(.*?)</{tag}>", xml, re.S).group(1)
+
+
+def _aceita_bruto(tipo: pa.DataType | None) -> bool:
+    """Tipos em que "igual no Arrow" e "igual no Python" coincidem (ponto flutuante não: 0.0 e -0.0)."""
+    if tipo is None:
+        return False
+    return (pa.types.is_integer(tipo) or pa.types.is_string(tipo) or pa.types.is_decimal(tipo)
+            or pa.types.is_timestamp(tipo) or pa.types.is_date(tipo) or pa.types.is_time(tipo)
+            or pa.types.is_duration(tipo))
+
+
+def _lista(valores) -> list:
+    return valores.to_pylist() if isinstance(valores, pa.Array) else valores
 
 
 def _como_lista(arr: pa.Array) -> list:

@@ -96,6 +96,46 @@ def test_texto_com_muitos_distintos_escrito_direto(tmp_path, monkeypatch):
     _conferir_igual(tmp_path, df, _em_lotes(df, [500, 500]))
 
 
+@pytest.mark.parametrize("tamanhos", [[1, 1, 1], [7, 300, 2], [100, 100, 100]], ids=["unitarios", "irregulares", "iguais"])
+def test_muitos_distintos_passam_para_o_disco(tmp_path, monkeypatch, tamanhos):
+    # limite baixo: as colunas com muitos distintos saem da tabela do Python no meio da leitura;
+    # "valor" (ponto flutuante) nunca sai
+    monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", 50)
+    df = _misturado(1_000, 7)
+    lotes = _em_lotes(df, tamanhos)
+    destino = tmp_path / "fluxo.qvd"
+    with EscritorQvdFluxo(destino, "tabela", dir_temp=tmp_path) as esc:
+        for lote in lotes:
+            esc.adicionar(lote)
+        brutos = {c.nome for c in esc._brutos}
+        assert {"id", "data_hora"} <= brutos and "valor" not in brutos
+        esc.finalizar()
+    ref = tmp_path / "qvdrs.qvd"
+    qvd.write_arrow(df.to_arrow(), str(ref), table_name="tabela")
+    assert _sem_data(destino.read_bytes()) == _sem_data(ref.read_bytes())
+    conferir_arquivo(destino, df.height)
+
+
+def test_modo_bruto_com_valores_que_voltam_e_nulos(tmp_path, monkeypatch):
+    # valores vistos antes da troca reaparecem depois dela; lote todo nulo já no modo bruto
+    monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", 20)
+    n = 3_000
+    df = pl.DataFrame({
+        "volta": [(i * 7919) % 900 for i in range(n)],
+        "nulos": [None if (i % 5 == 0 or 1_000 <= i < 1_200) else i for i in range(n)],
+        "texto": [None if i % 9 == 0 else f"t-{(i * 31) % 1_500}" for i in range(n)],
+    })
+    _conferir_igual(tmp_path, df, _em_lotes(df, [40, 960, 200, 800]))
+
+
+def test_modo_bruto_com_texto_direto_e_simbolos_em_disco(tmp_path, monkeypatch):
+    monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", 30)
+    monkeypatch.setattr(qvd_fluxo, "LIMITE_TEXTO_DIRETO", 40)
+    monkeypatch.setattr(qvd_fluxo, "SIMBOLOS_EM_DISCO", 100)
+    df = pl.DataFrame({"s": [f"código-{i}" for i in range(2_000)], "n": list(range(2_000))})
+    _conferir_igual(tmp_path, df, _em_lotes(df, [100, 900]))
+
+
 def test_lote_com_coluna_toda_nula_antes_do_tipo_aparecer(tmp_path):
     # o 1º lote chega com a coluna de tipo Null (o banco devolveu só nulos ali)
     lote1 = pl.DataFrame({"k": [1, 2], "s": [None, None]})
