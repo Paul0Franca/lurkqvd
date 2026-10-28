@@ -98,8 +98,7 @@ def test_texto_com_muitos_distintos_escrito_direto(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("tamanhos", [[1, 1, 1], [7, 300, 2], [100, 100, 100]], ids=["unitarios", "irregulares", "iguais"])
 def test_muitos_distintos_passam_para_o_disco(tmp_path, monkeypatch, tamanhos):
-    # limite baixo: as colunas com muitos distintos saem da tabela do Python no meio da leitura;
-    # "valor" (ponto flutuante) nunca sai
+    # limite baixo: as colunas com muitos distintos saem da tabela do Python no meio da leitura
     monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", 50)
     df = _misturado(1_000, 7)
     lotes = _em_lotes(df, tamanhos)
@@ -108,7 +107,7 @@ def test_muitos_distintos_passam_para_o_disco(tmp_path, monkeypatch, tamanhos):
         for lote in lotes:
             esc.adicionar(lote)
         brutos = {c.nome for c in esc._brutos}
-        assert {"id", "data_hora"} <= brutos and "valor" not in brutos
+        assert {"id", "data_hora", "valor"} <= brutos
         esc.finalizar()
     ref = tmp_path / "qvdrs.qvd"
     qvd.write_arrow(df.to_arrow(), str(ref), table_name="tabela")
@@ -134,6 +133,26 @@ def test_modo_bruto_com_texto_direto_e_simbolos_em_disco(tmp_path, monkeypatch):
     monkeypatch.setattr(qvd_fluxo, "SIMBOLOS_EM_DISCO", 100)
     df = pl.DataFrame({"s": [f"código-{i}" for i in range(2_000)], "n": list(range(2_000))})
     _conferir_igual(tmp_path, df, _em_lotes(df, [100, 900]))
+
+
+@pytest.mark.parametrize("limite", [3, 10**9], ids=["bruto", "python"])
+def test_ponto_flutuante_com_zero_negativo_nan_e_infinito(tmp_path, monkeypatch, limite):
+    # o Python junta 0.0 e -0.0 e separa os NaN; o Arrow faz o contrário: quem decide é o qvdrs
+    monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", limite)
+    especiais = [0.0, -0.0, float("nan"), float("inf"), float("-inf"), 1.5, None]
+    rnd = random.Random(5)
+    valores = [rnd.choice(especiais) if i % 3 else rnd.uniform(-1e3, 1e3) for i in range(3_000)]
+    valores[0], valores[1] = -0.0, 0.0
+    df = pl.DataFrame({"f": valores}, schema={"f": pl.Float64})
+    _conferir_igual(tmp_path, df, _em_lotes(df, [5, 400, 1_000, 95]))
+
+
+def test_modo_bruto_codificado_em_varios_blocos(tmp_path, monkeypatch):
+    # blocos pequenos: os símbolos conhecidos crescem bloco a bloco e valores voltam entre blocos
+    monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", 10)
+    monkeypatch.setattr(qvd_fluxo, "BLOCO_BRUTO", 250)
+    df = _misturado(2_000, 9).with_columns(volta=pl.Series([(i * 37) % 700 for i in range(2_000)]))
+    _conferir_igual(tmp_path, df, _em_lotes(df, [30, 100, 100, 7, 500, 263]))
 
 
 def test_lote_com_coluna_toda_nula_antes_do_tipo_aparecer(tmp_path):
