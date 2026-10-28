@@ -121,11 +121,16 @@ class Medidor:
         with Medidor() as m:
             ...carga...
         m.incremento  # bytes, ou None sem psutil
+
+    Quem acompanha a carga pode mudar m.fase ("lendo", "gerando"...): m.picos guarda o pico (RSS) de cada
+    fase, para saber onde a memória cresce.
     """
 
     def __init__(self, intervalo: float = 0.5) -> None:
         self.intervalo = intervalo
         self.inicio = self.pico = 0
+        self.fase = "inicio"
+        self.picos: dict[str, int] = {}
         self._fim = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -138,13 +143,18 @@ class Medidor:
 
     def _amostrar(self) -> None:
         while not self._fim.wait(self.intervalo):
-            self.pico = max(self.pico, _processo.memory_info().rss)
+            self._medir()
+
+    def _medir(self) -> None:
+        rss = _processo.memory_info().rss
+        self.pico = max(self.pico, rss)
+        self.picos[self.fase] = max(self.picos.get(self.fase, 0), rss)
 
     def __exit__(self, *_exc) -> None:
         if self._thread:
             self._fim.set()
             self._thread.join()
-            self.pico = max(self.pico, _processo.memory_info().rss)
+            self._medir()
 
     @property
     def incremento(self) -> int | None:

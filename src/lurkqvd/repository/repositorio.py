@@ -500,6 +500,25 @@ class Repositorio(AcessoMixin, AplicacoesMixin, NotificacoesMixin):
         with self._conn() as conn:
             conn.execute("UPDATE lurkqvd.execucoes SET memoria_pico_bytes = %s WHERE id = %s", (pico_bytes, execucao_id))
 
+    def linhas_da_ultima(self, carga_id: int) -> int | None:
+        """Linhas da última execução com sucesso, a previsão do percentual. None se a consulta ou a fonte
+        da carga mudou depois dela (a contagem antiga seria de outra consulta)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT e.linhas,
+                       EXISTS (SELECT 1 FROM lurkqvd.auditoria a
+                                WHERE a.alvo_tipo = 'carga' AND a.alvo_id = e.carga_id::text
+                                  AND a.acao = 'carga.alterar' AND a.criado_em > e.iniciado_em
+                                  AND a.detalhes -> 'antes' ?| array['query', 'fonte_id']) AS alterada
+                  FROM lurkqvd.execucoes e
+                 WHERE e.carga_id = %s AND e.status = 'sucesso' AND e.linhas IS NOT NULL
+                 ORDER BY e.iniciado_em DESC LIMIT 1
+                """,
+                (carga_id,),
+            ).fetchone()
+        return int(row["linhas"]) if row and not row["alterada"] else None
+
     def finalizar_sucesso(self, execucao_id: int, carga_id: int, r: ResultadoCarga) -> None:
         """Grava as métricas e guarda o file_id na carga (primeiro upload ou recriação)."""
         with self._conn() as conn:

@@ -44,8 +44,9 @@ class Progresso:
     levanta Cancelada: o gerador para no ponto em que está (lote lido, pedaço enviado...)."""
 
     def __init__(self, repo: Repositorio, execucao_id: int, intervalo: float = 2.0,
-                 linhas_previstas: int | None = None) -> None:
+                 linhas_previstas: int | None = None, medidor: memoria.Medidor | None = None) -> None:
         self.repo = repo
+        self.medidor = medidor  # recebe a fase atual: pico de memória por fase
         self.execucao_id = execucao_id
         self.intervalo = intervalo
         # linhas da última execução com sucesso: previsão melhor que a do plano do SQL Server
@@ -61,6 +62,8 @@ class Progresso:
             self.estado = {"fase": fase, "fase_desde": _agora_iso(),
                            **({"linhas_previstas": self.estado["linhas_previstas"]}
                               if self.estado.get("linhas_previstas") else {})}
+            if self.medidor:
+                self.medidor.fase = fase
         if self._previstas_fixas:
             dados.pop("linhas_previstas", None)
         self.estado.update({k: v for k, v in dados.items() if v is not None})
@@ -208,8 +211,9 @@ class Worker:
         self.execucao_atual = execucao_id
         self._sinal_agora()
         logger.info("execução %s: carga '%s' (id %s)", execucao_id, carga.nome, carga_id)
-        progresso = Progresso(self.repo, execucao_id, linhas_previstas=self._linhas_da_ultima(carga_id))
         medidor = memoria.Medidor()
+        progresso = Progresso(self.repo, execucao_id, linhas_previstas=self._linhas_da_ultima(carga_id),
+                              medidor=medidor)
         try:
             progresso("preparando")
             if self.gerador is None:
@@ -307,16 +311,15 @@ class Worker:
         try:
             self.repo.registrar_memoria(execucao_id, medidor.incremento)
             if medidor.incremento is not None:
-                logger.info("execução %s: memória +%.0f MB (pico do worker %.0f MB)", execucao_id,
-                            medidor.incremento / 1024**2, medidor.pico / 1024**2)
+                fases = " · ".join(f"{f} {b / 1024**2:.0f}" for f, b in medidor.picos.items())
+                logger.info("execução %s: memória +%.0f MB (pico do worker %.0f MB; por fase, MB: %s)",
+                            execucao_id, medidor.incremento / 1024**2, medidor.pico / 1024**2, fases)
         except Exception:  # só informativo: não pode mudar o resultado da carga
             logger.warning("não consegui gravar a memória da execução %s", execucao_id, exc_info=True)
 
     def _linhas_da_ultima(self, carga_id: int) -> int | None:
         try:
-            ultima = next((e for e in self.repo.historico(carga_id, limite=10)
-                           if e["status"] == "sucesso" and e.get("linhas")), None)
-            return int(ultima["linhas"]) if ultima else None
+            return self.repo.linhas_da_ultima(carga_id)
         except Exception:
             return None
 
