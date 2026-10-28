@@ -112,15 +112,9 @@ class EscritorQvdFluxo:
             col.tem_nulo = True
         else:
             cod = pc.dictionary_encode(arr)
-            # posição global de cada valor distinto deste lote (só os distintos do lote passam pelo Python)
-            mapa = np.empty(len(cod.dictionary), dtype=np.int64)
-            posicoes, valores = col.posicoes, col.valores
-            for j, v in enumerate(cod.dictionary.to_pylist()):
-                p = posicoes.get(v)
-                if p is None:
-                    p = posicoes[v] = len(valores)
-                    valores.append(v)
-                mapa[j] = p
+            # posição global de cada valor distinto deste lote. Só os distintos do lote passam pelo
+            # Python, e em operações de lote (map/zip do próprio CPython), sem laço valor a valor
+            mapa = _posicoes_globais(col, _como_lista(cod.dictionary), pa.types.is_floating(arr.type))
             ind = cod.indices
             nulos = ind.null_count
             # grava posição + 1; 0 = nulo (o número de símbolos final ainda não é conhecido)
@@ -372,6 +366,49 @@ def _largura(n: int, tem_nulo: bool) -> int:
 
 def _valor(xml: str, tag: str) -> str:
     return re.search(rf"<{tag}>(.*?)</{tag}>", xml, re.S).group(1)
+
+
+def _como_lista(arr: pa.Array) -> list:
+    """Valores (sem nulos) como lista Python, pelo caminho mais rápido para o tipo.
+
+    Números saem pelo numpy (bem mais rápido que to_pylist). Data/hora sai como o inteiro
+    guardado pelo Arrow (micro/mili/segundos, dias): dois valores são iguais se e só se os inteiros
+    são iguais, e pa.array(inteiros, type=tipo) refaz a coluna igualzinha na montagem dos símbolos.
+    """
+    t = arr.type
+    if pa.types.is_integer(t) or pa.types.is_floating(t):
+        return arr.to_numpy(zero_copy_only=False).tolist()
+    if pa.types.is_timestamp(t) or pa.types.is_date(t) or pa.types.is_time(t) or pa.types.is_duration(t):
+        return arr.view(pa.int64() if t.bit_width == 64 else pa.int32()).to_numpy(zero_copy_only=False).tolist()
+    return arr.to_pylist()
+
+
+def _posicoes_globais(col: _Coluna, vals: list, flutuante: bool = False) -> np.ndarray:
+    """Posição (id do símbolo) de cada valor de vals; os ainda não vistos entram no fim, na ordem.
+
+    Igual ao laço "get ou acrescenta" valor a valor, só que em lote. vals vem sem repetição (é o
+    dicionário do lote no Arrow). Só em ponto flutuante o Python pode achar iguais dois valores que
+    o Arrow separa (0.0 e -0.0): aí eles continuam caindo no mesmo símbolo, o primeiro.
+    """
+    posicoes, valores = col.posicoes, col.valores
+    inicio = len(valores)
+    if not posicoes:
+        achadas = [None] * len(vals)
+    else:
+        achadas = list(map(posicoes.get, vals))
+    if None not in achadas:
+        return np.fromiter(achadas, dtype=np.int64, count=len(achadas))
+    if achadas.count(None) == len(achadas):
+        novos = vals
+    else:
+        novos = [v for v, p in zip(vals, achadas) if p is None]
+    if flutuante:
+        novos = list(dict.fromkeys(novos))
+    posicoes.update(zip(novos, range(inicio, inicio + len(novos))))
+    valores.extend(novos)
+    if novos is vals:
+        return np.arange(inicio, inicio + len(vals), dtype=np.int64)  # tudo novo: na ordem
+    return np.fromiter(map(posicoes.__getitem__, vals), dtype=np.int64, count=len(vals))
 
 
 def _trocar(xml: str, **valores) -> str:
