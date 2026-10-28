@@ -27,13 +27,14 @@ QVD por coluna que ele escreve (um valor distinto por linha) é lido de volta: o
 diz qual símbolo do qvdrs corresponde a cada valor distinto daqui — é a "tradução" usada ao montar
 o índice final.
 
-Colunas com valores distintos demais (ex.: um ID por linha) não cabem bem na tabela valor -> posição
-do Python (~100 bytes por valor). Passado um limite (DISTINTOS_PYTHON, e só se os distintos forem uma
-boa parte das linhas), a coluna passa a guardar os valores brutos de cada lote num arquivo temporário
-(Arrow IPC, comprimido). No fim, o Arrow codifica esse trecho de uma vez (dictionary_encode, ordem da
-primeira aparição) e as posições são casadas com as dos lotes anteriores: o resultado é o mesmo do
-caminho pelo Python, com bem menos memória. Ponto flutuante fica de fora (o Python junta 0.0 e -0.0,
-o Arrow não).
+Colunas com muitos valores distintos não cabem bem na tabela valor -> posição do Python (~100 bytes
+por valor). Passado DISTINTOS_PYTHON, a coluna passa a guardar os valores brutos de cada lote num arquivo
+temporário (Arrow IPC, comprimido). No fim, esse trecho é codificado pelo Arrow em blocos de BLOCO_BRUTO
+linhas: cada bloco vira valores distintos (ordem da primeira aparição) casados com os símbolos já
+conhecidos, que ficam num array Arrow (~10x menor que no Python). A memória fica no tamanho dos
+distintos em Arrow mais um bloco, mesmo em tabelas de centenas de milhões de linhas. Onde o Arrow e o
+Python discordariam (0.0 e -0.0), o Python compara os bits, como o qvdrs; NaN o Arrow junta e, se
+o qvdrs separar ou juntar diferente, a tradução acerta.
 """
 
 from __future__ import annotations
@@ -56,9 +57,10 @@ CODEC = "zstd"
 # para o disco (o qvdrs montaria um array com todos eles na memória de uma vez)
 LIMITE_TEXTO_DIRETO = 50_000
 # a partir de quantos valores distintos uma coluna sai da tabela do Python e passa a guardar os valores
-# brutos em disco (só se eles forem ao menos PROPORCAO_DISTINTOS das linhas lidas até ali)
-DISTINTOS_PYTHON = int(os.getenv("LURKQVD_DISTINTOS_PYTHON", "1000000"))
-PROPORCAO_DISTINTOS = 0.3
+# brutos em disco (no Python, cada distinto custa ~100 bytes)
+DISTINTOS_PYTHON = int(os.getenv("LURKQVD_DISTINTOS_PYTHON", "250000"))
+# linhas por bloco ao codificar os valores brutos no fim (memória de um bloco ~ linhas x tamanho do valor)
+BLOCO_BRUTO = 8_000_000
 # símbolos de uma coluna acima disso vão para um arquivo temporário até a montagem (não ficam na memória)
 SIMBOLOS_EM_DISCO = 64 * 1024 * 1024
 _FIM_CABECALHO = b"</QvdTableHeader>"
@@ -127,9 +129,7 @@ class EscritorQvdFluxo:
                 self._guardar_bruto(col, arr)
                 continue
             self._gravar_posicoes(col, arr, texto_largo)
-            if (len(col.valores) > DISTINTOS_PYTHON
-                    and len(col.valores) > PROPORCAO_DISTINTOS * (self.linhas + lote.height)
-                    and _aceita_bruto(col.tipo)):
+            if len(col.valores) > DISTINTOS_PYTHON and _aceita_bruto(col.tipo):
                 self._passar_para_bruto(col)
 
         self.linhas += lote.height
@@ -146,7 +146,7 @@ class EscritorQvdFluxo:
                 dicionario = dicionario.cast(pa.string())
             # posição global de cada valor distinto deste lote. Só os distintos do lote passam pelo
             # Python, e em operações de lote (map/zip do próprio CPython), sem laço valor a valor
-            mapa = _posicoes_globais(col, _como_lista(dicionario), pa.types.is_floating(arr.type))
+            mapa = _posicoes_globais(col, _como_lista(dicionario))
             # posição + 1 (0 = nulo: o número de símbolos final ainda não é conhecido), já no menor
             # tipo que cabe; todo valor do dicionário aparece em alguma linha, então o maior daqui
             # é o maior do lote
@@ -165,7 +165,7 @@ class EscritorQvdFluxo:
     def _passar_para_bruto(self, col: _Coluna) -> None:
         """A coluna deixa a tabela do Python: o que já foi visto vira um array Arrow e os próximos
         lotes guardam os valores brutos em disco."""
-        col.anteriores = pa.array(col.valores, type=col.tipo)
+        col.anteriores = _para_arrow(col.valores, col.tipo)
         col.valores, col.posicoes = [], {}
         col.bruto_tipo = pa.large_string() if pa.types.is_string(col.tipo) else col.tipo
         caminho = self._tmp / f"bruto_{len(self._brutos)}.arrow"
@@ -183,32 +183,47 @@ class EscritorQvdFluxo:
         col.bruto.write_batch(pa.record_batch([arr], names=["v"]))
 
     def _resolver_bruto(self, col: _Coluna) -> None:
-        """Codifica os valores brutos de uma vez e grava as posições dos lotes do modo bruto no
-        mesmo formato dos outros (pedacos). Símbolos: os de antes + os novos, na ordem de aparição."""
+        """Codifica os valores brutos em blocos e grava as posições dos lotes do modo bruto no mesmo
+        formato dos outros (pedacos). Símbolos: os de antes + os novos de cada bloco, na ordem."""
         caminho, arquivo = col.bruto_arquivo
         col.bruto.close()
         arquivo.close()
         col.bruto = None
+        conhecidos = col.anteriores
+        col.anteriores = None
+        lotes = iter(self._lotes[len(col.pedacos):])  # cada lote do modo bruto é um record batch
         with pa.memory_map(str(caminho)) as fonte:
-            bruto = pa.ipc.open_stream(fonte).read_all().column(0).combine_chunks()
+            leitor = pa.ipc.open_stream(fonte)
+            bloco, linhas = [], 0
+            for rb in leitor:
+                bloco.append(rb.column(0))
+                linhas += rb.num_rows
+                if linhas >= BLOCO_BRUTO:
+                    conhecidos = self._codificar_bloco(col, bloco, conhecidos, lotes)
+                    bloco, linhas = [], 0
+            if bloco:
+                conhecidos = self._codificar_bloco(col, bloco, conhecidos, lotes)
         caminho.unlink()
-        cod = pc.dictionary_encode(bruto)
-        del bruto
+        col.valores = conhecidos
+
+    def _codificar_bloco(self, col: _Coluna, partes: list[pa.Array], conhecidos: pa.Array, lotes) -> pa.Array:
+        arr = partes[0] if len(partes) == 1 else pa.concat_arrays(partes)
+        cod = pc.dictionary_encode(arr)
+        del arr
         dicionario = cod.dictionary
         if dicionario.type != col.tipo:
             dicionario = dicionario.cast(col.tipo)
-        anteriores = col.anteriores
-        n0 = len(anteriores)
+        n0 = len(conhecidos)
         if n0:
-            achado = pc.index_in(dicionario, value_set=anteriores)
+            achado = pc.index_in(dicionario, value_set=conhecidos)
             novo = achado.is_null().to_numpy(zero_copy_only=False)
             pos = achado.fill_null(0).to_numpy().astype(np.int64)
         else:
             novo = np.ones(len(dicionario), dtype=bool)
             pos = np.zeros(len(dicionario), dtype=np.int64)
         pos[novo] = n0 + np.arange(int(novo.sum()), dtype=np.int64)
-        col.valores = pa.concat_arrays([anteriores, dicionario.filter(pa.array(novo))])
-        col.anteriores = None
+        if novo.any():
+            conhecidos = pa.concat_arrays([conhecidos, dicionario.filter(pa.array(novo))])
 
         mapa1 = pos + 1
         maior = int(mapa1.max(initial=0))
@@ -221,9 +236,12 @@ class EscritorQvdFluxo:
             pos1[ind.is_null().to_numpy(zero_copy_only=False)] = 0
         del cod, ind
         inicio = 0
-        for n in self._lotes[len(col.pedacos):]:
+        for parte in partes:
+            n = len(parte)
+            assert n == next(lotes), "lotes do modo bruto fora de ordem"
             self._gravar_pedaco(col, pos1[inicio:inicio + n])
             inicio += n
+        return conhecidos
 
     def _gravar_pedaco(self, col: _Coluna, pos1: np.ndarray) -> None:
         bruto = pos1.tobytes()
@@ -309,10 +327,9 @@ class EscritorQvdFluxo:
             if col.tem_nulo or len(arr) == 0:
                 arr = pa.concat_arrays([arr, pa.nulls(1, arr.type)])
         else:
-            valores = col.valores + ([None] if col.tem_nulo else [])
-            if not valores:
-                valores = [None]
-            arr = pa.array(valores, type=tipo)
+            arr = _para_arrow(col.valores, tipo)
+            if col.tem_nulo or len(arr) == 0:
+                arr = pa.concat_arrays([arr, pa.nulls(1, arr.type)])
         caminho = self._tmp / f"coluna_{i}.qvd"
         qvd.write_arrow(pa.table({col.nome: arr}), str(caminho), table_name=self.tabela)
         dados = caminho.read_bytes()
@@ -493,10 +510,11 @@ def _valor(xml: str, tag: str) -> str:
 
 
 def _aceita_bruto(tipo: pa.DataType | None) -> bool:
-    """Tipos em que "igual no Arrow" e "igual no Python" coincidem (ponto flutuante não: 0.0 e -0.0)."""
+    """Tipos que o Arrow codifica (o que ele e o Python discordam, o qvdrs decide pela tradução)."""
     if tipo is None:
         return False
-    return (pa.types.is_integer(tipo) or pa.types.is_string(tipo) or pa.types.is_decimal(tipo)
+    return (pa.types.is_integer(tipo) or pa.types.is_floating(tipo) or pa.types.is_string(tipo)
+            or pa.types.is_decimal(tipo)
             or pa.types.is_timestamp(tipo) or pa.types.is_date(tipo) or pa.types.is_time(tipo)
             or pa.types.is_duration(tipo))
 
@@ -505,27 +523,41 @@ def _lista(valores) -> list:
     return valores.to_pylist() if isinstance(valores, pa.Array) else valores
 
 
+_INTEIRO_DO_FLUTUANTE = {16: np.int16, 32: np.int32, 64: np.int64}
+
+
+def _para_arrow(valores: list, tipo: pa.DataType) -> pa.Array:
+    """Símbolos guardados por _como_lista de volta num array do tipo da coluna."""
+    if pa.types.is_floating(tipo):
+        bits = np.array(valores, dtype=_INTEIRO_DO_FLUTUANTE[tipo.bit_width])
+        return pa.array(bits.view(tipo.to_pandas_dtype()), type=tipo)
+    return pa.array(valores, type=tipo)
+
+
 def _como_lista(arr: pa.Array) -> list:
     """Valores (sem nulos) como lista Python, pelo caminho mais rápido para o tipo.
 
     Números saem pelo numpy (bem mais rápido que to_pylist). Data/hora sai como o inteiro
     guardado pelo Arrow (micro/mili/segundos, dias): dois valores são iguais se e só se os inteiros
     são iguais, e pa.array(inteiros, type=tipo) refaz a coluna igualzinha na montagem dos símbolos.
+    Ponto flutuante sai como os bits (inteiro de mesma largura): o qvdrs separa 0.0 de -0.0, e o
+    Python, comparando os números, juntaria os dois. _para_arrow desfaz na montagem.
     """
     t = arr.type
-    if pa.types.is_integer(t) or pa.types.is_floating(t):
+    if pa.types.is_integer(t):
         return arr.to_numpy(zero_copy_only=False).tolist()
+    if pa.types.is_floating(t):
+        return arr.to_numpy(zero_copy_only=False).view(_INTEIRO_DO_FLUTUANTE[t.bit_width]).tolist()
     if pa.types.is_timestamp(t) or pa.types.is_date(t) or pa.types.is_time(t) or pa.types.is_duration(t):
         return arr.view(pa.int64() if t.bit_width == 64 else pa.int32()).to_numpy(zero_copy_only=False).tolist()
     return arr.to_pylist()
 
 
-def _posicoes_globais(col: _Coluna, vals: list, flutuante: bool = False) -> np.ndarray:
+def _posicoes_globais(col: _Coluna, vals: list) -> np.ndarray:
     """Posição (id do símbolo) de cada valor de vals; os ainda não vistos entram no fim, na ordem.
 
     Igual ao laço "get ou acrescenta" valor a valor, só que em lote. vals vem sem repetição (é o
-    dicionário do lote no Arrow). Só em ponto flutuante o Python pode achar iguais dois valores que
-    o Arrow separa (0.0 e -0.0): aí eles continuam caindo no mesmo símbolo, o primeiro.
+    dicionário do lote no Arrow, em inteiros, bits ou texto: o que o Arrow separa, o Python também).
     """
     posicoes, valores = col.posicoes, col.valores
     inicio = len(valores)
@@ -539,8 +571,6 @@ def _posicoes_globais(col: _Coluna, vals: list, flutuante: bool = False) -> np.n
         novos = vals
     else:
         novos = [v for v, p in zip(vals, achadas) if p is None]
-    if flutuante:
-        novos = list(dict.fromkeys(novos))
     posicoes.update(zip(novos, range(inicio, inicio + len(novos))))
     valores.extend(novos)
     if novos is vals:
