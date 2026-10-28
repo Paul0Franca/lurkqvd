@@ -17,6 +17,9 @@ mova o que estiver em "Não lançado" para uma seção `## [X.Y.Z] - AAAA-MM-DD`
   500000); antes era por coluna (250000).
 - O worker devolve ao sistema a memória livre no fim de cada carga (antes ficava com o pico da última).
 - Símbolos de texto do QVD montados sem laço em Python.
+- Percentual da leitura: a contagem da última execução só vale como previsão se a consulta e a fonte não
+  mudaram depois dela; senão volta para a estimativa do banco (antes a barra parava no meio).
+- O log do worker mostra o pico de memória de cada fase da carga (lendo, gerando, enviando).
 
 ### Adicionado
 - `scripts/medir_escritor.py`: tempo e memória do gerador de QVD com uma tabela sintética.

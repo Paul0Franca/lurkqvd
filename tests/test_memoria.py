@@ -194,3 +194,38 @@ def test_worker_grava_o_pico_da_execucao(repo):
     assert e["status"] == "sucesso", e["erro"]
     assert e["memoria_pico_bytes"] > 200 * 1024**2
     assert e["memoria_reservada_bytes"] == 1 * GB  # sem histórico: a reserva padrão
+
+
+def test_previsao_de_linhas_ignora_execucao_de_outra_consulta(repo):
+    cid = _carga(repo)
+
+    def sucesso(linhas, daqui_s=0):
+        with repo._conn() as conn:
+            conn.execute("""INSERT INTO lurkqvd.execucoes (carga_id, status, iniciado_em, finalizado_em, linhas)
+                            VALUES (%s, 'sucesso', now() + make_interval(secs => %s), now(), %s)""",
+                         (cid, daqui_s, linhas))
+
+    assert repo.linhas_da_ultima(cid) is None
+    sucesso(100, daqui_s=-60)
+    assert repo.linhas_da_ultima(cid) == 100
+    repo.atualizar_carga(cid, None, agendamento=None)    # mudar a agenda não muda a contagem
+    assert repo.linhas_da_ultima(cid) == 100
+    repo.atualizar_carga(cid, None, query="SELECT 2")
+    assert repo.linhas_da_ultima(cid) is None
+    sucesso(70, daqui_s=60)
+    assert repo.linhas_da_ultima(cid) == 70
+
+
+def test_medidor_separa_o_pico_por_fase():
+    if memoria._processo is None:
+        pytest.skip("sem psutil")
+    with memoria.Medidor(intervalo=0.01) as m:
+        m.fase = "lendo"
+        time.sleep(0.05)
+        m.fase = "gerando"
+        bloco = np.ones(64 * 1024 * 1024, dtype=np.uint8)  # páginas tocadas: entra no RSS
+        time.sleep(0.05)
+        del bloco
+    assert set(m.picos) >= {"lendo", "gerando"}
+    assert m.picos["gerando"] >= m.picos["lendo"] + 32 * 1024 * 1024
+    assert m.pico == max(m.picos.values())
