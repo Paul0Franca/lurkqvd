@@ -289,8 +289,21 @@ class FonteSql:
             login_timeout_sec=15,
             packet_size=self.packet_size,
         )
+        # O arrow-odbc limita cada lote pelo buffer (BUFFER_LEITURA_MB) dividido pelo tamanho MÁXIMO
+        # declarado da linha: com colunas VARCHAR(MAX)/NVARCHAR largas, saem lotes de poucas centenas de
+        # linhas, e cada lote custa ao gerador um trabalho fixo por coluna. Junta até LOTE linhas antes
+        # de entregar (memória do tamanho dos dados reais, não do buffer).
+        import pyarrow as pa
+
+        juntos, linhas = [], 0
         for lote in leitor:
-            yield _normalizar_arrow_odbc(pl.from_arrow(lote))
+            juntos.append(lote)
+            linhas += lote.num_rows
+            if linhas >= self.LOTE:
+                yield _normalizar_arrow_odbc(pl.from_arrow(pa.Table.from_batches(juntos)).rechunk())
+                juntos, linhas = [], 0
+        if juntos:
+            yield _normalizar_arrow_odbc(pl.from_arrow(pa.Table.from_batches(juntos)).rechunk())
 
     def _lotes_odbc(self, sql: str, params: dict | None):
         """Leitura pelo SQLAlchemy: pyodbc no SQL Server, psycopg no PostgreSQL."""
