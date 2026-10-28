@@ -73,6 +73,7 @@ class EscritorQvdFluxo:
         self.tabela = tabela
         self._tmp = Path(tempfile.mkdtemp(prefix="lurkqvd_fluxo_", dir=dir_temp))
         self._indices = open(self._tmp / "indices.bin", "w+b")
+        self._fim_indices = 0  # onde o próximo pedaço começa (evita um seek por pedaço)
         self._colunas: list[_Coluna] | None = None
         self.linhas = 0
         self._lotes: list[int] = []  # linhas de cada lote (o índice é remontado na mesma divisão)
@@ -88,48 +89,55 @@ class EscritorQvdFluxo:
         elif lote.columns != [c.nome for c in self._colunas]:
             raise ValueError(f"lote com colunas diferentes: {lote.columns}")
 
-        for col in self._colunas:
-            arr = lote.get_column(col.nome).to_arrow()
-            if isinstance(arr, pa.ChunkedArray):
-                arr = arr.combine_chunks()
-            if pa.types.is_large_string(arr.type):
-                arr = arr.cast(pa.string())
+        tabela = lote.to_arrow()  # uma conversão para o lote todo, não uma por coluna
+        for col, arr in zip(self._colunas, tabela.columns):
+            arr = arr.chunk(0) if arr.num_chunks == 1 else arr.combine_chunks()
+            # texto do Polars chega como large_string (ou string_view): em vez de converter a coluna
+            # toda para string a cada lote, converte só os valores distintos (em _gravar_posicoes)
+            texto_largo = pa.types.is_large_string(arr.type) or pa.types.is_string_view(arr.type)
+            tipo_arr = pa.string() if texto_largo else arr.type
             if col.tipo is None or pa.types.is_null(col.tipo):
-                if not pa.types.is_null(arr.type):
-                    col.tipo = arr.type
-            elif pa.types.is_null(arr.type):
-                arr = pa.nulls(len(arr), col.tipo)
-            elif arr.type != col.tipo:
-                arr = arr.cast(col.tipo)
-            self._gravar_posicoes(col, arr)
+                if not pa.types.is_null(tipo_arr):
+                    col.tipo = tipo_arr
+            elif pa.types.is_null(tipo_arr):
+                arr, texto_largo = pa.nulls(len(arr), col.tipo), False
+            elif tipo_arr != col.tipo:
+                arr, texto_largo = arr.cast(col.tipo), False
+            self._gravar_posicoes(col, arr, texto_largo)
 
         self.linhas += lote.height
         self._lotes.append(lote.height)
 
-    def _gravar_posicoes(self, col: _Coluna, arr: pa.Array) -> None:
+    def _gravar_posicoes(self, col: _Coluna, arr: pa.Array, texto_largo: bool = False) -> None:
         if pa.types.is_null(arr.type) or arr.null_count == len(arr):
             pos1 = np.zeros(len(arr), dtype=np.uint8)  # lote todo nulo nesta coluna
             col.tem_nulo = True
         else:
             cod = pc.dictionary_encode(arr)
+            dicionario = cod.dictionary
+            if texto_largo:
+                dicionario = dicionario.cast(pa.string())
             # posição global de cada valor distinto deste lote. Só os distintos do lote passam pelo
             # Python, e em operações de lote (map/zip do próprio CPython), sem laço valor a valor
-            mapa = _posicoes_globais(col, _como_lista(cod.dictionary), pa.types.is_floating(arr.type))
+            mapa = _posicoes_globais(col, _como_lista(dicionario), pa.types.is_floating(arr.type))
+            # posição + 1 (0 = nulo: o número de símbolos final ainda não é conhecido), já no menor
+            # tipo que cabe; todo valor do dicionário aparece em alguma linha, então o maior daqui
+            # é o maior do lote
+            mapa1 = mapa + 1
+            maior = int(mapa1.max(initial=0))
+            mapa1 = mapa1.astype(np.uint8 if maior < 2**8 else np.uint16 if maior < 2**16 else np.uint32)
             ind = cod.indices
-            nulos = ind.null_count
-            # grava posição + 1; 0 = nulo (o número de símbolos final ainda não é conhecido)
-            pos1 = mapa[ind.fill_null(0).to_numpy(zero_copy_only=False)] + 1
-            if nulos:
+            if ind.null_count == 0:
+                pos1 = mapa1[ind.to_numpy()]  # sem nulos: leitura direta, sem cópia
+            else:
                 col.tem_nulo = True
+                pos1 = mapa1[ind.fill_null(0).to_numpy()]
                 pos1[ind.is_null().to_numpy(zero_copy_only=False)] = 0
-            maior = int(pos1.max(initial=0))
-            dtype = np.uint8 if maior < 2**8 else np.uint16 if maior < 2**16 else np.uint32
-            pos1 = pos1.astype(dtype)
         bruto = pos1.tobytes()
         comprimido = pa.compress(bruto, codec=CODEC, asbytes=True)
-        inicio = self._indices.seek(0, os.SEEK_END)
         self._indices.write(comprimido)
-        col.pedacos.append((inicio, len(comprimido), len(bruto), pos1.dtype.str, len(pos1)))
+        col.pedacos.append((self._fim_indices, len(comprimido), len(bruto), pos1.dtype.str, len(pos1)))
+        self._fim_indices += len(comprimido)
 
     # ------------------------------------------------------------------ #
     # 2. Montagem do arquivo
