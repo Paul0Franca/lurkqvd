@@ -27,14 +27,25 @@ QVD por coluna que ele escreve (um valor distinto por linha) é lido de volta: o
 diz qual símbolo do qvdrs corresponde a cada valor distinto daqui — é a "tradução" usada ao montar
 o índice final.
 
-Colunas com muitos valores distintos não cabem bem na tabela valor -> posição do Python (~100 bytes
-por valor). Passado DISTINTOS_PYTHON, a coluna passa a guardar os valores brutos de cada lote num arquivo
-temporário (Arrow IPC, comprimido). No fim, esse trecho é codificado pelo Arrow em blocos de BLOCO_BRUTO
-linhas: cada bloco vira valores distintos (ordem da primeira aparição) casados com os símbolos já
-conhecidos, que ficam num array Arrow (~10x menor que no Python). A memória fica no tamanho dos
-distintos em Arrow mais um bloco, mesmo em tabelas de centenas de milhões de linhas. Onde o Arrow e o
-Python discordariam (0.0 e -0.0), o Python compara os bits, como o qvdrs; NaN o Arrow junta e, se
-o qvdrs separar ou juntar diferente, a tradução acerta.
+Memória: a tabela valor -> posição do Python custa ~150 bytes por valor, então ela tem um orçamento
+para a tabela toda (DISTINTOS_PYTHON, somando as colunas). Passado o orçamento, a coluna com mais
+valores sai do Python e entra no modo bruto: cada valor vai para o disco junto com o número da linha
+(a "chave"), espalhado por hash em PARTICOES arquivos (Arrow IPC, comprimido). Valores iguais caem
+sempre no mesmo arquivo, então no fim cada grupo de arquivos (até ALVO_GRUPO bytes; um arquivo maior
+é espalhado de novo, com outra semente) é resolvido sozinho na memória:
+  - primeira aparição de cada valor = menor chave entre as linhas com aquele valor;
+  - "marca" (arquivo mapeado, uma posição por linha) guarda em que grupo está o valor que aparece
+    pela primeira vez naquela linha; percorrida em ordem, dá a ordem dos símbolos, e a contagem
+    acumulada dá o número do símbolo de cada primeira aparição;
+  - o índice de cada linha (chave da primeira aparição do seu valor) vai para outro arquivo mapeado.
+Os símbolos saem em janelas, juntando os grupos na ordem da marca. Nada disso depende do número de
+valores distintos: a memória fica em ~um grupo, mesmo com centenas de milhões de valores. Os valores
+já vistos no Python entram nos arquivos com chaves negativas (antes de todas as linhas), e por isso
+mantêm as posições que já foram gravadas no índice.
+
+Ponto flutuante e data/hora vão para o disco como o inteiro que o Arrow guarda: valores iguais se e
+só se os bits são iguais, como o qvdrs compara (0.0 e -0.0 separados); onde o qvdrs juntar valores,
+a tradução acerta.
 """
 
 from __future__ import annotations
@@ -56,11 +67,18 @@ CODEC = "zstd"
 # colunas de texto com mais valores distintos que isso têm os símbolos escritos aqui, direto
 # para o disco (o qvdrs montaria um array com todos eles na memória de uma vez)
 LIMITE_TEXTO_DIRETO = 50_000
-# a partir de quantos valores distintos uma coluna sai da tabela do Python e passa a guardar os valores
-# brutos em disco (no Python, cada distinto custa ~100 bytes)
-DISTINTOS_PYTHON = int(os.getenv("LURKQVD_DISTINTOS_PYTHON", "250000"))
-# linhas por bloco ao codificar os valores brutos no fim (memória de um bloco ~ linhas x tamanho do valor)
-BLOCO_BRUTO = 8_000_000
+# total de valores distintos guardados no Python, somando todas as colunas (~150 bytes cada); passado
+# isso, a coluna com mais valores vai para o modo bruto (disco)
+DISTINTOS_PYTHON = int(os.getenv("LURKQVD_DISTINTOS_PYTHON", "500000"))
+# coluna com menos distintos que isso fica no Python mesmo com o orçamento estourado (no disco,
+# poucos valores repetidos custariam mais que a tabela)
+MINIMO_BRUTO = 10_000
+# arquivos por coluna no modo bruto (valores espalhados por hash)
+PARTICOES = 16
+# bytes de valores resolvidos de uma vez no fim (memória do modo bruto ~ 4x isso)
+ALVO_GRUPO = 32 * 1024 * 1024
+# posições da marca por janela ao montar os símbolos em ordem
+JANELA = 262_144
 # símbolos de uma coluna acima disso vão para um arquivo temporário até a montagem (não ficam na memória)
 SIMBOLOS_EM_DISCO = 64 * 1024 * 1024
 _FIM_CABECALHO = b"</QvdTableHeader>"
@@ -74,11 +92,10 @@ class _Coluna:
     valores: list = field(default_factory=list)    # símbolos na ordem da primeira aparição
     tem_nulo: bool = False
     pedacos: list = field(default_factory=list)    # (offset, bytes, bytes_originais, dtype, linhas)
-    # modo bruto (muitos distintos): valores dos lotes seguintes vão para um arquivo Arrow
-    bruto: object = None                           # pa.ipc writer aberto
-    bruto_arquivo: tuple | None = None             # (caminho, arquivo aberto)
-    bruto_tipo: pa.DataType | None = None
-    anteriores: pa.Array | None = None             # símbolos vistos antes de entrar no modo bruto
+    # modo bruto (muitos distintos): valores e chaves espalhados em arquivos por hash
+    bruto: _Particoes | None = None
+    anteriores: int = 0                            # símbolos vistos no Python antes do modo bruto
+    linhas_bruto: int = 0                          # linhas recebidas no modo bruto
 
 
 class EscritorQvdFluxo:
@@ -127,13 +144,26 @@ class EscritorQvdFluxo:
                 arr, texto_largo = arr.cast(col.tipo), False
             if col.bruto is not None:
                 self._guardar_bruto(col, arr)
-                continue
-            self._gravar_posicoes(col, arr, texto_largo)
-            if len(col.valores) > DISTINTOS_PYTHON and _aceita_bruto(col.tipo):
-                self._passar_para_bruto(col)
+            else:
+                self._gravar_posicoes(col, arr, texto_largo)
+                # a cada coluna, não só no fim do lote: no 1º lote, todas as colunas com muitos
+                # distintos encheriam o Python juntas antes de alguma sair
+                self._conter_python()
 
         self.linhas += lote.height
         self._lotes.append(lote.height)
+
+    def _conter_python(self) -> None:
+        """Mantém os distintos guardados no Python (todas as colunas) dentro de DISTINTOS_PYTHON,
+        passando para o modo bruto a coluna com mais valores até caber."""
+        no_python = [c for c in self._colunas if c.bruto is None]
+        total = sum(len(c.valores) for c in no_python)
+        candidatas = [c for c in no_python if len(c.valores) >= MINIMO_BRUTO and _aceita_bruto(c.tipo)]
+        while total > DISTINTOS_PYTHON and candidatas:
+            maior = max(candidatas, key=lambda c: len(c.valores))
+            candidatas.remove(maior)
+            total -= len(maior.valores)
+            self._passar_para_bruto(maior)
 
     def _gravar_posicoes(self, col: _Coluna, arr: pa.Array, texto_largo: bool = False) -> None:
         if pa.types.is_null(arr.type) or arr.null_count == len(arr):
@@ -163,85 +193,81 @@ class EscritorQvdFluxo:
         self._gravar_pedaco(col, pos1)
 
     def _passar_para_bruto(self, col: _Coluna) -> None:
-        """A coluna deixa a tabela do Python: o que já foi visto vira um array Arrow e os próximos
-        lotes guardam os valores brutos em disco."""
-        col.anteriores = _para_arrow(col.valores, col.tipo)
+        """A coluna deixa a tabela do Python: o que já foi visto entra nos arquivos com chaves negativas
+        (na ordem, antes de qualquer linha) e os próximos lotes vão direto para o disco."""
+        anteriores = _para_arrow(col.valores, col.tipo)
         col.valores, col.posicoes = [], {}
-        col.bruto_tipo = pa.large_string() if pa.types.is_string(col.tipo) else col.tipo
-        caminho = self._tmp / f"bruto_{len(self._brutos)}.arrow"
-        arquivo = pa.OSFile(str(caminho), "wb")
-        col.bruto = pa.ipc.new_stream(arquivo, pa.schema([("v", col.bruto_tipo)]),
-                                      options=pa.ipc.IpcWriteOptions(compression="lz4"))
-        col.bruto_arquivo = (caminho, arquivo)
+        col.anteriores = len(anteriores)
+        col.bruto = _Particoes(self._tmp / f"bruto_{len(self._brutos)}", PARTICOES, semente=0)
+        col.bruto.escrever(np.arange(-col.anteriores, 0, dtype=np.int64), _fisico(anteriores))
         self._brutos.append(col)
 
     def _guardar_bruto(self, col: _Coluna, arr: pa.Array) -> None:
         if arr.null_count:
             col.tem_nulo = True
-        if arr.type != col.bruto_tipo:
-            arr = arr.cast(col.bruto_tipo)
-        col.bruto.write_batch(pa.record_batch([arr], names=["v"]))
+        chaves = np.arange(col.linhas_bruto, col.linhas_bruto + len(arr), dtype=np.int64)
+        col.linhas_bruto += len(arr)
+        col.bruto.escrever(chaves, _fisico(arr))
 
-    def _resolver_bruto(self, col: _Coluna) -> None:
-        """Codifica os valores brutos em blocos e grava as posições dos lotes do modo bruto no mesmo
-        formato dos outros (pedacos). Símbolos: os de antes + os novos de cada bloco, na ordem."""
-        caminho, arquivo = col.bruto_arquivo
-        col.bruto.close()
-        arquivo.close()
+    def _resolver_bruto(self, col: _Coluna, i: int) -> dict:
+        """Resolve a coluna do modo bruto (ver o docstring do módulo): grava as posições dos lotes do
+        modo bruto (pedacos) e devolve os símbolos e o cabeçalho da coluna."""
+        pasta = col.bruto.pasta
+        partes = col.bruto.fechar()
         col.bruto = None
-        conhecidos = col.anteriores
-        col.anteriores = None
-        lotes = iter(self._lotes[len(col.pedacos):])  # cada lote do modo bruto é um record batch
-        with pa.memory_map(str(caminho)) as fonte:
-            leitor = pa.ipc.open_stream(fonte)
-            bloco, linhas = [], 0
-            for rb in leitor:
-                bloco.append(rb.column(0))
-                linhas += rb.num_rows
-                if linhas >= BLOCO_BRUTO:
-                    conhecidos = self._codificar_bloco(col, bloco, conhecidos, lotes)
-                    bloco, linhas = [], 0
-            if bloco:
-                conhecidos = self._codificar_bloco(col, bloco, conhecidos, lotes)
-        caminho.unlink()
-        col.valores = conhecidos
+        n0, linhas = col.anteriores, col.linhas_bruto
+        tam = n0 + linhas
+        # índice: chave da 1ª aparição + n0 + 1 de cada linha do modo bruto (0 = nulo)
+        indice = np.lib.format.open_memmap(pasta / "indice.npy", mode="w+", dtype=np.int64, shape=(max(linhas, 1),))
+        # marca: grupo + 1 na chave (+ n0) em que um valor aparece pela 1ª vez; 0 nas outras
+        marca = np.lib.format.open_memmap(pasta / "marca.npy", mode="w+", dtype=np.uint32, shape=(max(tam, 1),))
+        grupos: list[Path] = []
+        for tabela in _grupos(partes, semente=1):
+            df = pl.from_arrow(tabela).with_columns(pl.col("k").min().over("v").alias("f"))
+            del tabela
+            reais = df.filter(pl.col("k") >= 0)
+            indice[reais.get_column("k").to_numpy()] = reais.get_column("f").to_numpy() + (n0 + 1)
+            del reais
+            primeiros = df.filter(pl.col("k") == pl.col("f")).select("f", "v").sort("f")
+            del df
+            marca[primeiros.get_column("f").to_numpy() + n0] = len(grupos) + 1
+            caminho = pasta / f"distintos_{len(grupos)}.arrow"
+            v = primeiros.get_column("v").to_arrow()
+            with pa.OSFile(str(caminho), "wb") as f, pa.ipc.new_file(f, pa.schema([("v", v.type)])) as w:
+                w.write_table(pa.table({"v": v}))  # sem compressão: lido de volta mapeado, sem cópia
+            grupos.append(caminho)
+            del primeiros, v
 
-    def _codificar_bloco(self, col: _Coluna, partes: list[pa.Array], conhecidos: pa.Array, lotes) -> pa.Array:
-        arr = partes[0] if len(partes) == 1 else pa.concat_arrays(partes)
-        cod = pc.dictionary_encode(arr)
-        del arr
-        dicionario = cod.dictionary
-        if dicionario.type != col.tipo:
-            dicionario = dicionario.cast(col.tipo)
-        n0 = len(conhecidos)
-        if n0:
-            achado = pc.index_in(dicionario, value_set=conhecidos)
-            novo = achado.is_null().to_numpy(zero_copy_only=False)
-            pos = achado.fill_null(0).to_numpy().astype(np.int64)
-        else:
-            novo = np.ones(len(dicionario), dtype=bool)
-            pos = np.zeros(len(dicionario), dtype=np.int64)
-        pos[novo] = n0 + np.arange(int(novo.sum()), dtype=np.int64)
-        if novo.any():
-            conhecidos = pa.concat_arrays([conhecidos, dicionario.filter(pa.array(novo))])
+        # número do símbolo de cada 1ª aparição: contagem acumulada da marca (reaproveita o arquivo)
+        simbolo = np.lib.format.open_memmap(pasta / "simbolo.npy", mode="w+", dtype=np.uint32, shape=(max(tam, 1),))
+        n = 0
+        for ini in range(0, tam, JANELA * 16):
+            acumulado = np.cumsum(marca[ini:ini + JANELA * 16] > 0, dtype=np.int64)
+            simbolo[ini:ini + len(acumulado)] = acumulado + (n - 1)
+            n += int(acumulado[-1])
 
-        mapa1 = pos + 1
-        maior = int(mapa1.max(initial=0))
-        mapa1 = mapa1.astype(np.uint8 if maior < 2**8 else np.uint16 if maior < 2**16 else np.uint32)
-        ind = cod.indices
-        if ind.null_count == 0:
-            pos1 = mapa1[ind.to_numpy()]
-        else:
-            pos1 = mapa1[ind.fill_null(0).to_numpy()]
-            pos1[ind.is_null().to_numpy(zero_copy_only=False)] = 0
-        del cod, ind
-        inicio = 0
-        for parte in partes:
-            n = len(parte)
-            assert n == next(lotes), "lotes do modo bruto fora de ordem"
-            self._gravar_pedaco(col, pos1[inicio:inicio + n])
-            inicio += n
-        return conhecidos
+        lotes = self._lotes[len(col.pedacos):]
+        ini = 0
+        for qtd in lotes:
+            v = indice[ini:ini + qtd]
+            pos1 = simbolo[np.maximum(v, 1) - 1].astype(np.int64) + 1
+            pos1[v == 0] = 0
+            maior = int(pos1.max(initial=0))
+            self._gravar_pedaco(col, pos1.astype(np.uint8 if maior < 2**8 else np.uint16 if maior < 2**16 else np.uint32))
+            ini += qtd
+        v = None  # a última fatia ainda aponta para o arquivo mapeado (no Windows, impediria apagar)
+        del indice, simbolo, v
+
+        janelas = _em_ordem(marca, grupos)
+        try:
+            if pa.types.is_string(col.tipo) and n > LIMITE_TEXTO_DIRETO:
+                return self._simbolos_texto_direto(col, i, janelas, n)
+            col.valores = _do_fisico(pa.concat_arrays(list(janelas)) if n else pa.array([], _fisico_tipo(col.tipo)), col.tipo)
+            return self._simbolos_pelo_qvdrs(col, i)
+        finally:
+            janelas.close()
+            del marca
+            shutil.rmtree(pasta, ignore_errors=True)
 
     def _gravar_pedaco(self, col: _Coluna, pos1: np.ndarray) -> None:
         bruto = pos1.tobytes()
@@ -262,12 +288,10 @@ class EscritorQvdFluxo:
         for c in cols:
             c.posicoes = {}  # a tabela valor -> posição só serve durante a leitura: libera já
         self._indices.seek(0, os.SEEK_END)
-        for c in cols:
-            if c.bruto is not None:
-                self._resolver_bruto(c)
 
         # símbolos e cabeçalho de cada coluna, escritos pelo qvdrs a partir dos valores distintos
-        meta = [self._simbolos_pelo_qvdrs(c, i) for i, c in enumerate(cols)]
+        meta = [self._resolver_bruto(c, i) if c.bruto is not None else self._simbolos_pelo_qvdrs(c, i)
+                for i, c in enumerate(cols)]
         larguras = [m["largura"] for m in meta]
 
         # posição dos bits: maior largura primeiro (estável); largura 0 fica na posição 0
@@ -386,20 +410,25 @@ class EscritorQvdFluxo:
             "traducao": traducao,
         }
 
-    def _simbolos_texto_direto(self, col: _Coluna, i: int) -> dict:
+    def _simbolos_texto_direto(self, col: _Coluna, i: int, janelas=None, n: int | None = None) -> dict:
         """Texto com muitos valores: símbolo = 0x04 + UTF-8 + 0x00, gravado em disco aos poucos.
-        O bloco do cabeçalho vem do qvdrs com uma amostra (mesmo tipo e tags) e recebe os números reais."""
-        n = len(col.valores)
-        amostra = _Coluna(col.nome, tipo=pa.string(), valores=_lista(col.valores[:3]), tem_nulo=col.tem_nulo)
-        bloco = self._simbolos_pelo_qvdrs(amostra, i, permitir_direto=False)["bloco"]
+        O bloco do cabeçalho vem do qvdrs com uma amostra (mesmo tipo e tags) e recebe os números reais.
+        janelas: arrays de texto com os n símbolos em ordem (modo bruto); sem elas, os do Python."""
+        if janelas is None:
+            n = len(col.valores)
+            janelas = (pa.array(col.valores[k:k + 200_000], type=pa.large_string()) for k in range(0, n, 200_000))
         arquivo = self._tmp / f"simbolos_{i}.bin"
-        tamanho = 0
+        tamanho, amostra = 0, None
         with open(arquivo, "wb") as f:
-            for k in range(0, n, 200_000):
-                parte = b"".join(b"\x04" + v.encode("utf-8") + b"\x00" for v in _lista(col.valores[k:k + 200_000]))
+            for arr in janelas:
+                if amostra is None:
+                    amostra = arr.slice(0, 3).to_pylist()
+                parte = _texto_qvd(arr)
                 f.write(parte)
                 tamanho += len(parte)
         col.valores = []
+        amostra = _Coluna(col.nome, tipo=pa.string(), valores=amostra, tem_nulo=col.tem_nulo)
+        bloco = self._simbolos_pelo_qvdrs(amostra, i, permitir_direto=False)["bloco"]
         largura = _largura(n, col.tem_nulo)
         return {
             "bloco": _trocar(bloco, BitWidth=largura, NoOfSymbols=n, Length=tamanho),
@@ -458,8 +487,7 @@ class EscritorQvdFluxo:
         for col in self._brutos:
             if col.bruto is not None:
                 try:
-                    col.bruto.close()
-                    col.bruto_arquivo[1].close()
+                    col.bruto.fechar()
                 except Exception:
                     pass
                 col.bruto = None
@@ -519,9 +547,6 @@ def _aceita_bruto(tipo: pa.DataType | None) -> bool:
             or pa.types.is_duration(tipo))
 
 
-def _lista(valores) -> list:
-    return valores.to_pylist() if isinstance(valores, pa.Array) else valores
-
 
 _INTEIRO_DO_FLUTUANTE = {16: np.int16, 32: np.int32, 64: np.int64}
 
@@ -576,6 +601,153 @@ def _posicoes_globais(col: _Coluna, vals: list) -> np.ndarray:
     if novos is vals:
         return np.arange(inicio, inicio + len(vals), dtype=np.int64)  # tudo novo: na ordem
     return np.fromiter(map(posicoes.__getitem__, vals), dtype=np.int64, count=len(vals))
+
+
+class _Particoes:
+    """Valores de uma coluna (sem os nulos) com a chave de cada um, espalhados por hash em n arquivos
+    Arrow: valores iguais sempre no mesmo arquivo."""
+
+    def __init__(self, pasta: Path, n: int, semente: int) -> None:
+        pasta.mkdir()
+        self.pasta, self.n, self.semente = pasta, n, semente
+        self.bytes = [0] * n
+        self._arquivos: list = [None] * n  # (arquivo, writer), abertos no primeiro valor de cada um
+
+    def escrever(self, chaves: np.ndarray, valores: pa.Array) -> None:
+        if valores.null_count:
+            validos = valores.is_valid()
+            chaves = chaves[validos.to_numpy(zero_copy_only=False)]
+            valores = valores.filter(validos)
+        if not len(valores):
+            return
+        parte = (pl.from_arrow(valores).hash(self.semente) % self.n).to_numpy()
+        parte = parte.astype(np.uint8 if self.n <= 256 else np.uint32)  # ordenação estável de uint8: radix, ~4x mais rápida
+        ordem = np.argsort(parte, kind="stable")
+        lote = pa.record_batch([pa.array(chaves[ordem]), valores.take(ordem)], names=["k", "v"])
+        ini = 0
+        for p, qtd in enumerate(np.bincount(parte, minlength=self.n)):
+            if qtd:
+                pedaco = lote.slice(ini, qtd)
+                if self._arquivos[p] is None:
+                    arquivo = pa.OSFile(str(self.pasta / f"p{p}.arrow"), "wb")
+                    self._arquivos[p] = (arquivo, pa.ipc.new_stream(
+                        arquivo, lote.schema, options=pa.ipc.IpcWriteOptions(compression="lz4")))
+                self._arquivos[p][1].write_batch(pedaco)
+                self.bytes[p] += pedaco.nbytes
+                ini += int(qtd)
+
+    def fechar(self) -> list[tuple[Path, int]]:
+        """Fecha os arquivos; devolve (caminho, bytes dos valores) dos que receberam algo."""
+        partes = []
+        for p, aberto in enumerate(self._arquivos):
+            if aberto is not None:
+                aberto[1].close()
+                aberto[0].close()
+                partes.append((self.pasta / f"p{p}.arrow", self.bytes[p]))
+        self._arquivos = [None] * self.n
+        return partes
+
+
+def _grupos(partes: list[tuple[Path, int]], semente: int):
+    """Tabelas (k, v) com até ALVO_GRUPO bytes: arquivos vizinhos juntos, e um arquivo maior que isso
+    espalhado de novo, com outra semente (valores iguais continuam juntos). Apaga cada arquivo lido."""
+    juntos, soma = [], 0
+    for caminho, tam in partes + [(None, 0)]:
+        if juntos and (caminho is None or soma + tam > ALVO_GRUPO):
+            yield pa.concat_tables([_ler_parte(c) for c in juntos])
+            juntos, soma = [], 0
+        if caminho is None:
+            break
+        if tam > ALVO_GRUPO and semente < 5:  # semente: limita a recursão (um valor só muito repetido)
+            sub = _Particoes(caminho.parent / f"s{semente}_{caminho.stem}", 2 + tam // ALVO_GRUPO, semente)
+            with pa.memory_map(str(caminho)) as fonte:
+                for rb in pa.ipc.open_stream(fonte):
+                    sub.escrever(rb.column(0).to_numpy(), rb.column(1))
+            caminho.unlink()
+            yield from _grupos(sub.fechar(), semente + 1)
+            continue
+        juntos.append(caminho)
+        soma += tam
+
+
+def _ler_parte(caminho: Path) -> pa.Table:
+    with pa.memory_map(str(caminho)) as fonte:
+        tabela = pa.ipc.open_stream(fonte).read_all()  # comprimido: a leitura já copia para a memória
+    caminho.unlink()
+    return tabela
+
+
+def _em_ordem(marca: np.ndarray, grupos: list[Path]):
+    """Os valores distintos na ordem da 1ª aparição, em janelas: a marca diz de que grupo vem cada um,
+    e cada grupo já está na ordem (por chave)."""
+    fontes = [pa.memory_map(str(c)) for c in grupos]
+    try:
+        colunas = [pa.ipc.open_file(f).read_all().column("v") for f in fontes]
+        cursores = [0] * len(grupos)
+        for ini in range(0, len(marca), JANELA):
+            m = marca[ini:ini + JANELA]
+            seq = m[m > 0].astype(np.int64) - 1
+            if not len(seq):
+                continue
+            pedacos = []
+            for g, qtd in enumerate(np.bincount(seq, minlength=len(grupos))):
+                if qtd:
+                    pedacos.extend(colunas[g].slice(cursores[g], qtd).chunks)
+                    cursores[g] += int(qtd)
+            juntos = pa.concat_arrays(pedacos)
+            # juntos está agrupado por grupo; a janela quer a ordem da marca
+            ordem = np.argsort(seq, kind="stable")
+            inversa = np.empty_like(ordem)
+            inversa[ordem] = np.arange(len(ordem))
+            yield juntos.take(inversa)
+    finally:
+        colunas = None
+        for f in fontes:
+            f.close()
+
+
+def _fisico_tipo(tipo: pa.DataType) -> pa.DataType:
+    """Tipo em que a coluna vai para o disco no modo bruto: ponto flutuante e data/hora como o inteiro
+    guardado (iguais se e só se os bits são iguais), texto como large_string."""
+    if pa.types.is_floating(tipo) or pa.types.is_temporal(tipo):
+        return {16: pa.int16(), 32: pa.int32(), 64: pa.int64()}[tipo.bit_width]
+    if pa.types.is_string(tipo) or pa.types.is_large_string(tipo) or pa.types.is_string_view(tipo):
+        return pa.large_string()
+    return tipo
+
+
+def _fisico(arr: pa.Array) -> pa.Array:
+    tipo = _fisico_tipo(arr.type)
+    if tipo == arr.type:
+        return arr
+    return arr.cast(tipo) if tipo == pa.large_string() else arr.view(tipo)
+
+
+def _do_fisico(arr: pa.Array, tipo: pa.DataType) -> pa.Array:
+    if arr.type == tipo:
+        return arr
+    return arr.cast(tipo) if pa.types.is_string(tipo) else arr.view(tipo)
+
+
+def _texto_qvd(arr: pa.Array) -> bytes:
+    """Símbolos de texto do QVD (0x04 + UTF-8 + 0x00) de um array sem nulos, sem laço em Python."""
+    if not pa.types.is_large_string(arr.type):
+        arr = arr.cast(pa.large_string())
+    n = len(arr)
+    _, buf_offsets, buf_dados = arr.buffers()
+    offsets = np.frombuffer(buf_offsets, dtype=np.int64)[arr.offset:arr.offset + n + 1]
+    ini, fim = int(offsets[0]), int(offsets[-1])
+    saida = np.empty(fim - ini + 2 * n, dtype=np.uint8)
+    comeco = offsets[:-1] - ini + 2 * np.arange(n, dtype=np.int64)  # onde fica o 0x04 de cada um
+    final = offsets[1:] - ini + 2 * np.arange(1, n + 1, dtype=np.int64) - 1  # e o 0x00
+    saida[comeco] = 4
+    saida[final] = 0
+    dados = np.ones(len(saida), dtype=bool)
+    dados[comeco] = False
+    dados[final] = False
+    if fim > ini:
+        saida[dados] = np.frombuffer(buf_dados, dtype=np.uint8)[ini:fim]
+    return saida.tobytes()
 
 
 def _trocar(xml: str, **valores) -> str:

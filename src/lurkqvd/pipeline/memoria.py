@@ -16,6 +16,8 @@ A RAM considerada é a menor entre a da máquina e o limite do container (cgroup
 Precisa do psutil (pip install psutil); sem ele, trava e reserva ficam desligadas e o worker avisa no log.
 """
 
+import ctypes
+import gc
 import logging
 import os
 import threading
@@ -94,6 +96,23 @@ def conferir(carga: str, *, forcar: bool = False) -> None:
             "tem valores distintos demais (ex.: um ID único por linha que os apps não usam): "
             "veja a composição do QVD e tire do SELECT o que não for necessário."
         )
+
+
+def devolver() -> None:
+    """Devolve ao sistema a memória que ficou livre no fim de uma carga. Os alocadores (o do Python, o
+    do Arrow e o malloc da glibc) guardam o que foi liberado para reusar, e o worker parado ficaria com
+    o pico da última carga. No Linux (glibc); nos outros sistemas, só o que o Python e o Arrow soltam."""
+    gc.collect()
+    try:
+        import pyarrow as pa
+
+        pa.default_memory_pool().release_unused()
+    except ImportError:
+        pass
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
 
 
 class Medidor:

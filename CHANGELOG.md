@@ -9,6 +9,18 @@ mova o que estiver em "Não lançado" para uma seção `## [X.Y.Z] - AAAA-MM-DD`
 
 ## [Não lançado]
 
+### Mudado
+- Gerador de QVD: a memória não cresce mais com os valores distintos. As colunas com muitos valores vão
+  para o disco espalhadas por hash e são resolvidas no fim em grupos de tamanho fixo. Numa tabela de
+  6 milhões de linhas e 74 colunas, o pico caiu de ~3 GB para ~850 MB, com o mesmo arquivo.
+- `LURKQVD_DISTINTOS_PYTHON` agora é o total de distintos na memória somando todas as colunas (padrão
+  500000); antes era por coluna (250000).
+- O worker devolve ao sistema a memória livre no fim de cada carga (antes ficava com o pico da última).
+- Símbolos de texto do QVD montados sem laço em Python.
+
+### Adicionado
+- `scripts/medir_escritor.py`: tempo e memória do gerador de QVD com uma tabela sintética.
+
 ## [0.1.0] - 2026-10-24
 
 Primeira versão pública.

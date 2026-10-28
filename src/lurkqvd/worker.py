@@ -232,6 +232,7 @@ class Worker:
         finally:
             self.execucao_atual = None
             self._sinal_agora()
+            memoria.devolver()  # o worker parado não fica com o pico da carga
         return True
 
     # ------------------------------------------------------------------ #

@@ -100,6 +100,7 @@ def test_texto_com_muitos_distintos_escrito_direto(tmp_path, monkeypatch):
 def test_muitos_distintos_passam_para_o_disco(tmp_path, monkeypatch, tamanhos):
     # limite baixo: as colunas com muitos distintos saem da tabela do Python no meio da leitura
     monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", 50)
+    monkeypatch.setattr(qvd_fluxo, "MINIMO_BRUTO", 1)
     df = _misturado(1_000, 7)
     lotes = _em_lotes(df, tamanhos)
     destino = tmp_path / "fluxo.qvd"
@@ -118,6 +119,7 @@ def test_muitos_distintos_passam_para_o_disco(tmp_path, monkeypatch, tamanhos):
 def test_modo_bruto_com_valores_que_voltam_e_nulos(tmp_path, monkeypatch):
     # valores vistos antes da troca reaparecem depois dela; lote todo nulo já no modo bruto
     monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", 20)
+    monkeypatch.setattr(qvd_fluxo, "MINIMO_BRUTO", 1)
     n = 3_000
     df = pl.DataFrame({
         "volta": [(i * 7919) % 900 for i in range(n)],
@@ -129,6 +131,7 @@ def test_modo_bruto_com_valores_que_voltam_e_nulos(tmp_path, monkeypatch):
 
 def test_modo_bruto_com_texto_direto_e_simbolos_em_disco(tmp_path, monkeypatch):
     monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", 30)
+    monkeypatch.setattr(qvd_fluxo, "MINIMO_BRUTO", 1)
     monkeypatch.setattr(qvd_fluxo, "LIMITE_TEXTO_DIRETO", 40)
     monkeypatch.setattr(qvd_fluxo, "SIMBOLOS_EM_DISCO", 100)
     df = pl.DataFrame({"s": [f"código-{i}" for i in range(2_000)], "n": list(range(2_000))})
@@ -139,6 +142,7 @@ def test_modo_bruto_com_texto_direto_e_simbolos_em_disco(tmp_path, monkeypatch):
 def test_ponto_flutuante_com_zero_negativo_nan_e_infinito(tmp_path, monkeypatch, limite):
     # o Python junta 0.0 e -0.0 e separa os NaN; o Arrow faz o contrário: quem decide é o qvdrs
     monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", limite)
+    monkeypatch.setattr(qvd_fluxo, "MINIMO_BRUTO", 1)
     especiais = [0.0, -0.0, float("nan"), float("inf"), float("-inf"), 1.5, None]
     rnd = random.Random(5)
     valores = [rnd.choice(especiais) if i % 3 else rnd.uniform(-1e3, 1e3) for i in range(3_000)]
@@ -147,12 +151,60 @@ def test_ponto_flutuante_com_zero_negativo_nan_e_infinito(tmp_path, monkeypatch,
     _conferir_igual(tmp_path, df, _em_lotes(df, [5, 400, 1_000, 95]))
 
 
-def test_modo_bruto_codificado_em_varios_blocos(tmp_path, monkeypatch):
-    # blocos pequenos: os símbolos conhecidos crescem bloco a bloco e valores voltam entre blocos
+def test_modo_bruto_resolvido_em_varios_grupos(tmp_path, monkeypatch):
+    # grupos pequenos: arquivos juntos, espalhados de novo e várias janelas; valores voltam entre lotes
     monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", 10)
-    monkeypatch.setattr(qvd_fluxo, "BLOCO_BRUTO", 250)
+    monkeypatch.setattr(qvd_fluxo, "MINIMO_BRUTO", 1)
+    monkeypatch.setattr(qvd_fluxo, "ALVO_GRUPO", 1_500)
+    monkeypatch.setattr(qvd_fluxo, "JANELA", 100)
     df = _misturado(2_000, 9).with_columns(volta=pl.Series([(i * 37) % 700 for i in range(2_000)]))
     _conferir_igual(tmp_path, df, _em_lotes(df, [30, 100, 100, 7, 500, 263]))
+
+
+@pytest.fixture
+def modo_bruto(monkeypatch):
+    """Orçamento do Python minúsculo e grupos pequenos: as colunas vão para o disco cedo e o fim passa
+    pelos grupos juntos, pelos espalhados de novo e por várias janelas."""
+    monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", 30)
+    monkeypatch.setattr(qvd_fluxo, "MINIMO_BRUTO", 5)
+    monkeypatch.setattr(qvd_fluxo, "PARTICOES", 4)
+    monkeypatch.setattr(qvd_fluxo, "ALVO_GRUPO", 2_000)
+    monkeypatch.setattr(qvd_fluxo, "JANELA", 64)
+
+
+@pytest.mark.parametrize("semente", [1, 2])
+@pytest.mark.parametrize("tamanhos", [[3, 200, 1], [999]], ids=["irregulares", "quase-tudo"])
+def test_modo_bruto_sai_igual_ao_qvdrs(tmp_path, modo_bruto, semente, tamanhos):
+    df = _misturado(1_000, semente).with_columns(
+        pl.col("id").cast(pl.String).alias("id_texto"),
+        (pl.col("id") % 37 - 18).cast(pl.Float64).mul(0.5).alias("flutuante"),  # inclui 0.0
+    )
+    df = df.with_columns(pl.when(pl.col("id") % 5 == 0).then(-0.0).otherwise(pl.col("flutuante")).alias("flutuante"))
+    _conferir_igual(tmp_path, df, _em_lotes(df, tamanhos))
+
+
+def test_modo_bruto_texto_direto_e_data_hora_juntada(tmp_path, modo_bruto, monkeypatch):
+    monkeypatch.setattr(qvd_fluxo, "LIMITE_TEXTO_DIRETO", 20)
+    base = dt.datetime(2024, 5, 1, 10, 0, 0)
+    n = 3_000
+    df = pl.DataFrame({
+        "s": [None if i % 13 == 0 else ("" if i % 17 == 0 else f"ç-{(i * 7919) % 900}") for i in range(n)],
+        "t": [base + dt.timedelta(microseconds=1000 * (i % 7)) + dt.timedelta(seconds=(i * 31) % 400) for i in range(n)],
+    })
+    _conferir_igual(tmp_path, df, _em_lotes(df, [40, 500, 7]))
+
+
+def test_modo_bruto_respeita_o_orcamento(tmp_path, monkeypatch):
+    monkeypatch.setattr(qvd_fluxo, "DISTINTOS_PYTHON", 1_000)
+    monkeypatch.setattr(qvd_fluxo, "MINIMO_BRUTO", 100)
+    n = 5_000
+    df = pl.DataFrame({"unico": list(range(n)), "medio": [i % 700 for i in range(n)], "pouco": [i % 3 for i in range(n)]})
+    with EscritorQvdFluxo(tmp_path / "x.qvd", "tabela", dir_temp=tmp_path) as esc:
+        for lote in _em_lotes(df, [500] * 10):
+            esc.adicionar(lote)
+            assert sum(len(c.valores) for c in esc._colunas) <= 1_000
+        assert [c.nome for c in esc._brutos] == ["unico"]  # "medio" (700) coube depois que a maior saiu
+    _conferir_igual(tmp_path, df, _em_lotes(df, [500] * 10))
 
 
 def test_lote_com_coluna_toda_nula_antes_do_tipo_aparecer(tmp_path):
