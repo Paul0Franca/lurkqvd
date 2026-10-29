@@ -8,6 +8,9 @@ A coluna (de data ou número) divide a consulta em faixas de valores do mesmo ta
 mínimo e o máximo dela, mais uma faixa para os nulos. Cada faixa é lida por uma conexão própria,
 ao mesmo tempo; os lotes são descartados (só interessa o tempo de chegar).
 
+A leitura usa as mesmas opções da carga (LURKQVD_BUFFER_LEITURA_MB, LURKQVD_PACKET_SIZE): para medir
+outro tamanho de pacote, rode com a variável definida.
+
 No fim confere que a soma das linhas das faixas é igual à leitura em uma faixa só: a divisão
 não pode perder nem duplicar linhas.
 """
@@ -73,6 +76,8 @@ def ler(fonte: dict, senha: str, sql: str, resultado: dict, chave) -> None:
         leitor = read_arrow_batches_from_odbc(
             query=sql, connection_string=fontes._odbc(fonte, senha), batch_size=100_000,
             max_text_size=fontes.MAX_TEXTO, login_timeout_sec=15,
+            max_bytes_per_batch=fontes.BUFFER_LEITURA_MB * 1024 * 1024,  # como na carga (e sem estourar a memória)
+            packet_size=fontes.PACKET_SIZE,
         )
         for lote in leitor:
             linhas += lote.num_rows

@@ -36,8 +36,10 @@ from src.lurkqvd.config import segredos
 
 logger = logging.getLogger("lurkqvd.fontes")
 MOTOR_PADRAO = os.getenv("LURKQVD_MOTOR_LEITURA", "odbc")  # odbc | arrow-odbc | connectorx
-# arrow-odbc: tamanho do pacote de rede (bytes; vazio = padrão do driver) e limite para VARCHAR(MAX)
-PACKET_SIZE = int(os.getenv("LURKQVD_PACKET_SIZE") or 0) or None
+# arrow-odbc: tamanho do pacote de rede (bytes; 0 = padrão do driver) e limite para VARCHAR(MAX).
+# 32767 é o maior que o SQL Server aceita: menos idas e voltas na rede, mesma CPU (+15% numa leitura de
+# 17 milhões de linhas, scripts/medir_paralelo)
+PACKET_SIZE = int(os.getenv("LURKQVD_PACKET_SIZE", "32767") or 0) or None
 MAX_TEXTO = int(os.getenv("LURKQVD_MAX_TEXTO", "65536"))
 # arrow-odbc: teto do buffer de trânsito (MB). Ele é reservado pelo tamanho MÁXIMO declarado das colunas,
 # não pelos dados, e em dobro (o próximo lote é buscado em paralelo). O padrão do arrow-odbc, 512, dá ~1 GB
