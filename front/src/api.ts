@@ -540,6 +540,48 @@ export interface DadosAplicacao {
   carga_ids?: number[];
 }
 
+/** Aviso dentro da ferramenta (sino do topo e balão ao entrar). */
+export interface Aviso {
+  id: number;
+  titulo: string;
+  texto: string;
+  link_url: string | null;
+  link_rotulo: string | null;
+  /** papel mínimo de quem vê */
+  publico: Papel;
+  abrir_ao_entrar: boolean;
+  origem: "admin" | "sistema";
+  publicado_em: string;
+  expira_em: string | null;
+}
+
+export interface AvisoDaPessoa extends Aviso {
+  lido: boolean;
+}
+
+export interface MeusAvisos {
+  avisos: AvisoDaPessoa[];
+  nao_lidos: number;
+}
+
+/** Linha de Configurações › Avisos. */
+export interface AvisoAdmin extends Aviso {
+  criado_por_nome: string | null;
+  expirado: boolean;
+  leituras: number;
+  publico_total: number;
+}
+
+export interface NovoAviso {
+  titulo: string;
+  texto: string;
+  link_url?: string | null;
+  link_rotulo?: string | null;
+  publico: Papel;
+  abrir_ao_entrar: boolean;
+  expira_em?: string | null;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -669,6 +711,12 @@ export class Api {
   enviarTesteSmtp = (para?: string) => this.req<TesteSmtp>("POST", "/config/smtp/enviar-teste", { para: para || null });
   removerSmtp = () => this.req<void>("DELETE", "/config/smtp");
   salvarPreferencias = (dados: PreferenciasNotificacao) => this.req<ConfigNotificacoes>("PUT", "/config/notificacoes", dados);
+  meusAvisos = () => this.req<MeusAvisos>("GET", "/avisos");
+  /** sem ids = marca todos como lidos */
+  marcarAvisosLidos = (ids?: number[]) => this.req<void>("POST", "/avisos/lidos", { ids: ids ?? null });
+  avisosAdmin = () => this.req<AvisoAdmin[]>("GET", "/config/avisos");
+  publicarAviso = (dados: NovoAviso) => this.req<Aviso>("POST", "/config/avisos", dados);
+  removerAviso = (id: number) => this.req<void>("DELETE", `/config/avisos/${id}`);
   criarPasta = (connectionId: string, pasta: string, nome: string) =>
     this.req<Pasta>("POST", `/espacos/${connectionId}/pastas?pasta=${encodeURIComponent(pasta)}`, { nome });
   aplicacoes = () => this.req<Aplicacao[]>("GET", "/aplicacoes");

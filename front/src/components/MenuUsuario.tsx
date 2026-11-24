@@ -5,6 +5,7 @@ import Avatar from "./Avatar";
 import { DESCRICAO_PAPEL } from "../lib/papeis";
 import { DialogoTrocaSenha } from "./Senha";
 import { SeletorTema } from "./Tema";
+import { LinkDataLurk } from "./Logo";
 
 interface Props {
   api: Api;
@@ -81,9 +82,12 @@ export default function MenuUsuario({ api, usuario, aoSair }: Props) {
             <LogOut className="h-4 w-4" aria-hidden="true" />
             Sair
           </button>
-          {versao && (
-            <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">LurkQVD v{versao}</p>
-          )}
+          <p className="flex items-center justify-between gap-3 border-t border-border px-4 py-2 text-xs text-muted-foreground">
+            <span>{versao ? `LurkQVD v${versao}` : "LurkQVD"}</span>
+            <span>
+              por <LinkDataLurk />
+            </span>
+          </p>
         </div>
       )}
       {trocandoSenha && <DialogoTrocaSenha api={api} usuario={usuario} aoFechar={() => setTrocandoSenha(false)} />}

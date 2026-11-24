@@ -8,7 +8,7 @@ import Atividade from "./Atividade";
 import GraficoDiario from "./GraficoDiario";
 import PainelHero from "./PainelHero";
 import { StatusBadge } from "./comum";
-import { SubLogoQVD } from "./Logo";
+import { IconeQVD } from "./Logo";
 
 interface Props {
   api: Api;
@@ -69,7 +69,7 @@ export default function Painel({ api, usuario, aoAbrirConfig }: Props) {
             <p className="vazio">Carregando…</p>
           ) : atencao.length === 0 ? (
             <div className="tudo-em-dia flex items-center gap-5 rounded-2xl border border-border bg-card px-6 py-8">
-              <SubLogoQVD tamanho={56} corForma="currentColor" corOlhos="var(--lq-surface)" pisca className="shrink-0 text-foreground" />
+              <IconeQVD tamanho={56} pisca className="shrink-0" />
               <div>
                 <p className="font-sora font-semibold">Nada pede atenção agora.</p>
                 <p className="mt-1 text-sm text-muted-foreground">Cargas com erro ou em execução aparecem aqui.</p>
