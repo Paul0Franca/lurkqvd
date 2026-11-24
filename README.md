@@ -240,7 +240,7 @@ Tudo pelo `.env` (veja os comentários em [`.env.example`](.env.example)). O res
 | `LURKQVD_MEMORIA_SEM_HISTORICO_MB` | `1024` | reserva de uma carga que ainda não rodou |
 | `LURKQVD_ESPERA_MAX_MIN` | `15` | depois disso esperando memória, uma carga não é mais ultrapassada |
 | `LURKQVD_MAQUINA` | `servidor` | workers com o mesmo nome dividem a mesma RAM; um nome por máquina |
-| `LURKQVD_LIMITE_ENVIO_DIRETO_MB` | `500` | acima disso, o upload para a Qlik é em pedaços retomáveis |
+| `LURKQVD_LIMITE_ENVIO_DIRETO_MB` | `100` | acima disso (ou se o envio direto cair), o upload para a Qlik é em pedaços retomáveis; máximo da Qlik: 500 |
 
 ## Operação
 
