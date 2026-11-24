@@ -126,8 +126,10 @@ class AplicacoesMixin:
                 self._auditar(conn, usuario_id, "aplicacao.alterar", "aplicacao", aplicacao_id, mudou)
         return self.buscar_aplicacao(aplicacao_id)
 
-    def remover_aplicacao(self, aplicacao_id: int, usuario_id: int | None) -> str | None:
-        """Remove a aplicação (as cargas continuam existindo). Bloqueia se houver rodada ativa."""
+    def remover_aplicacao(self, aplicacao_id: int, usuario_id: int | None, *, levar_cargas: bool = False) -> dict | None:
+        """Remove a aplicação. Bloqueia se houver rodada ativa.
+        levar_cargas: exclui junto as cargas que só estão nela (as que estão em outra aplicação continuam).
+        Retorna {"nome", "cargas": [cargas excluídas]}; None se não existir."""
         from src.lurkqvd.repository.repositorio import OperacaoNaoPermitida
 
         with self._conn() as conn:
@@ -138,9 +140,22 @@ class AplicacoesMixin:
                                  (aplicacao_id, list(STATUS_ATIVOS))).fetchone()
             if ativa:
                 raise OperacaoNaoPermitida("A aplicação está executando agora. Cancele ou espere terminar.")
+            so_nela = []
+            if levar_cargas:
+                so_nela = [r["carga_id"] for r in conn.execute(
+                    """
+                    SELECT ac.carga_id FROM lurkqvd.aplicacao_cargas ac
+                     WHERE ac.aplicacao_id = %s
+                       AND NOT EXISTS (SELECT 1 FROM lurkqvd.aplicacao_cargas o
+                                        WHERE o.carga_id = ac.carga_id AND o.aplicacao_id <> ac.aplicacao_id)
+                    """,
+                    (aplicacao_id,),
+                ).fetchall()]
             conn.execute("DELETE FROM lurkqvd.aplicacoes WHERE id = %s", (aplicacao_id,))
-            self._auditar(conn, usuario_id, "aplicacao.remover", "aplicacao", aplicacao_id, {"nome": app["nome"]})
-            return app["nome"]
+            removidas = self._remover_cargas(conn, so_nela, usuario_id, {"com_aplicacao": app["nome"]}) if so_nela else []
+            self._auditar(conn, usuario_id, "aplicacao.remover", "aplicacao", aplicacao_id,
+                          {"nome": app["nome"], **({"cargas_removidas": [c["nome"] for c in removidas]} if levar_cargas else {})})
+            return {"nome": app["nome"], "cargas": removidas}
 
     def mover_carga(self, carga_id: int, origem_id: int | None, destino_id: int | None, *,
                     copiar: bool, posicao: int | None, usuario_id: int | None) -> None:

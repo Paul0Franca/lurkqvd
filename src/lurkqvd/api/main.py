@@ -519,6 +519,56 @@ def mudar_destino_carga(carga_id: int, body: DestinoAlterar, repo: Repo, usuario
         raise HTTPException(422, "Espaço não encontrado: atualize a lista de espaços da Qlik e tente de novo.")
 
 
+class ArquivosQlikRemovidos(BaseModel):
+    """O que aconteceu com os QVDs na Qlik ao excluir cargas (só quando pediram para apagar lá também)."""
+    apagados: list[str] = []      # nomes das cargas cujo arquivo foi apagado
+    nao_existiam: list[str] = []  # o arquivo já não estava na Qlik
+    erros: list[dict] = []        # {"nome", "erro"}: a carga saiu do LurkQVD, mas o arquivo ficou na Qlik
+
+
+class CargaRemovida(BaseModel):
+    nome: str
+    qlik: ArquivosQlikRemovidos | None = None
+
+
+def apagar_arquivos_qlik(repo: Repositorio, cargas: list[dict], usuario_id: int) -> ArquivosQlikRemovidos:
+    """Apaga na Qlik os QVDs de cargas já excluídas do banco. Falha aqui não desfaz a exclusão:
+    vira um erro na resposta (o arquivo fica na Qlik, para apagar lá)."""
+    r = ArquivosQlikRemovidos()
+    com_arquivo = [c for c in cargas if c.get("file_id")]
+    if not com_arquivo:
+        return r
+    try:
+        qlik = get_qlik()
+    except HTTPException as e:
+        r.erros = [{"nome": c["nome"], "erro": e.detail} for c in com_arquivo]
+        return r
+    for c in com_arquivo:
+        try:
+            existia = qlik.delete_file(str(c["file_id"]))
+        except Exception as e:  # noqa: BLE001 - segue para as próximas; o erro volta na resposta
+            logger.warning("falha ao apagar o arquivo %s da carga %s na Qlik: %s", c["file_id"], c["nome"], e)
+            r.erros.append({"nome": c["nome"], "erro": str(e)})
+            continue
+        (r.apagados if existia else r.nao_existiam).append(c["nome"])
+        repo.auditar(usuario_id, "carga.arquivo_qlik", "carga", c["id"],
+                     {"nome": c["nome"], "file_id": str(c["file_id"]), "qlik_path": c["qlik_path"], "existia": existia})
+    return r
+
+
+@app.delete("/cargas/{carga_id}", response_model=CargaRemovida)
+def remover_carga(carga_id: int, repo: Repo, usuario: Admin, apagar_qlik: bool = False):
+    """Exclui a carga, o histórico de execuções dela e a ligação com as aplicações. A auditoria guarda o que era.
+    apagar_qlik=true apaga também o QVD publicado na Qlik (apps que leem o arquivo deixam de achá-lo)."""
+    try:
+        carga = repo.remover_carga(carga_id, usuario["id"])
+    except OperacaoNaoPermitida as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+    if not carga:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Carga não encontrada.")
+    return CargaRemovida(nome=carga["nome"], qlik=apagar_arquivos_qlik(repo, [carga], usuario["id"]) if apagar_qlik else None)
+
+
 @app.get("/cargas/{carga_id}", response_model=CargaDetalhe)
 def detalhar_carga(carga_id: int, repo: Repo, _: Leitor):
     carga = repo.buscar_carga_detalhe(carga_id)
