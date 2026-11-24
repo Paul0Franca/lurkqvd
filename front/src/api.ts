@@ -63,6 +63,13 @@ export interface CargaResumo {
   fonte_padrao?: boolean | null;
 }
 
+/** O que aconteceu com os QVDs na Qlik ao excluir cargas (com "apagar na Qlik também"). */
+export interface ArquivosQlikRemovidos {
+  apagados: string[];
+  nao_existiam: string[];
+  erros: { nome: string; erro: string }[];
+}
+
 export interface CargaDetalhe {
   id: number;
   nome: string;
@@ -603,6 +610,8 @@ export class Api {
   sincronizarEspacos = () => this.req<Espaco[]>("POST", "/espacos/sincronizar");
   criarCarga = (dados: NovaCarga) => this.req<{ id: number }>("POST", "/cargas", dados);
   carga = (id: number) => this.req<CargaDetalhe>("GET", `/cargas/${id}`);
+  removerCarga = (id: number, apagarQlik = false) =>
+    this.req<{ nome: string; qlik: ArquivosQlikRemovidos | null }>("DELETE", `/cargas/${id}?apagar_qlik=${apagarQlik}`);
   resumoEspacos = () => this.req<EspacoResumo[]>("GET", "/espacos/resumo");
   conteudoEspaco = (connectionId: string, pasta: string) =>
     this.req<ConteudoEspaco>("GET", `/espacos/${connectionId}/conteudo?pasta=${encodeURIComponent(pasta)}`);
@@ -666,7 +675,11 @@ export class Api {
   aplicacao = (id: number) => this.req<Aplicacao>("GET", `/aplicacoes/${id}`);
   criarAplicacao = (dados: DadosAplicacao) => this.req<Aplicacao>("POST", "/aplicacoes", dados);
   alterarAplicacao = (id: number, dados: DadosAplicacao) => this.req<Aplicacao>("PATCH", `/aplicacoes/${id}`, dados);
-  removerAplicacao = (id: number) => this.req<void>("DELETE", `/aplicacoes/${id}`);
+  removerAplicacao = (id: number, opcoes: { levarCargas?: boolean; apagarQlik?: boolean } = {}) =>
+    this.req<{ nome: string; cargas_removidas: string[]; qlik: ArquivosQlikRemovidos | null }>(
+      "DELETE",
+      `/aplicacoes/${id}?levar_cargas=${!!opcoes.levarCargas}&apagar_qlik=${!!opcoes.apagarQlik}`,
+    );
   moverCarga = (dados: { carga_id: number; origem_id: number | null; destino_id: number | null; copiar?: boolean; posicao?: number | null }) =>
     this.req<Aplicacao[]>("POST", "/aplicacoes/mover-carga", dados);
   executarAplicacao = (id: number) => this.req<{ execucao_aplicacao_id: number }>("POST", `/aplicacoes/${id}/executar`);

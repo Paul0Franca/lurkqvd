@@ -1,7 +1,7 @@
 // Configurações > Auditoria: linha do tempo de quem fez o quê, agrupada por dia.
 
 import { useCallback, useEffect, useState } from "react";
-import { Bot, ChevronDown, Database, FolderPlus, KeyRound, LogIn, Mail, Play, Settings2, UserCog, type LucideIcon } from "lucide-react";
+import { Bot, ChevronDown, Database, FolderPlus, KeyRound, LogIn, Mail, Play, Settings2, Trash2, UserCog, type LucideIcon } from "lucide-react";
 import type { Api, RegistroAuditoria, UsuarioAdmin } from "../api";
 import { descrever } from "../lib/agenda";
 import { dataHora } from "../lib/formato";
@@ -23,6 +23,8 @@ const ICONE: Record<string, LucideIcon> = {
   "carga.criar": Database,
   "carga.alterar": Database,
   "carga.destino": Database,
+  "carga.remover": Trash2,
+  "carga.arquivo_qlik": Trash2,
   "pasta.criar": FolderPlus,
   "carga.executar": Play,
   "usuario.criar": UserCog,
@@ -107,6 +109,10 @@ function frase(r: RegistroAuditoria): { antes: string; alvo?: string; depois?: s
       const para = d.para as { qlik_path?: string } | undefined;
       return { antes: "moveu o destino de", alvo, depois: para?.qlik_path ? ` para ${para.qlik_path}` : "" };
     }
+    case "carga.remover":
+      return { antes: "excluiu a carga", alvo, depois: d.com_aplicacao ? `, junto com a aplicação ${d.com_aplicacao}` : "" };
+    case "carga.arquivo_qlik":
+      return { antes: "apagou na Qlik o QVD da carga", alvo, depois: d.qlik_path ? ` (${d.qlik_path}${d.existia ? "" : ", que já não existia"})` : "" };
     case "pasta.criar":
       return { antes: "criou a pasta", alvo, depois: d.espaco ? ` em ${d.espaco}` : "" };
     case "usuario.criar":
@@ -328,7 +334,7 @@ function Registro({ r }: { r: RegistroAuditoria }) {
           <span className="font-medium">{autor(r)}</span> {f.antes}
           {f.alvo && " "}
           {f.alvo &&
-            (r.alvo_tipo === "carga" && r.alvo_id ? (
+            (r.alvo_tipo === "carga" && r.alvo_id && r.acao !== "carga.remover" && r.acao !== "carga.arquivo_qlik" ? (
               <a href={link({ tela: "carga", id: Number(r.alvo_id) })} className="aud-alvo aud-alvo-link">
                 {f.alvo}
               </a>

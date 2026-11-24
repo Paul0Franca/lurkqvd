@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { CalendarClock, Check, Copy, Pencil } from "lucide-react";
+import { CalendarClock, Check, Copy, Pencil, Trash2 } from "lucide-react";
 import type { Api, CargaDetalhe as Carga, Espaco, Execucao, Fonte, Usuario } from "../api";
 import { deCron, descrever, paraCron } from "../lib/agenda";
 import { ROTULO, dataHora, duracao, relativo, tamanho } from "../lib/formato";
 import { useExecucao } from "../lib/useExecucao";
-import { link } from "../rotas";
+import { link, navegar } from "../rotas";
+import DialogoExclusao, { OpcaoExclusao } from "./DialogoExclusao";
+import { avisoQlik } from "../lib/exclusao";
 import AgendamentoEditor from "./AgendamentoEditor";
 import Avatar from "./Avatar";
 import GraficoExecucoes from "./GraficoExecucoes";
@@ -112,6 +114,8 @@ function Conteudo({
 
   const podeExecutar = usuario.papel === "admin" || usuario.papel === "editor";
   const [movendo, setMovendo] = useState(false);
+  const [excluindo, setExcluindo] = useState(false);
+  const [apagarQlik, setApagarQlik] = useState(false);
 
   return (
     <div className="mx-auto max-w-[1200px] px-4 py-8 sm:px-6">
@@ -151,11 +155,62 @@ function Conteudo({
         </div>
         {podeExecutar && (
           <div className="flex flex-col items-end gap-1.5">
-            <BotaoExecutar emAndamento={emAndamento} desativado={!carga.ativo} aoClicar={executar} tamanho="grande" />
+            <div className="flex items-center gap-2">
+              {usuario.papel === "admin" && (
+                <button
+                  type="button"
+                  className="icone-btn"
+                  onClick={() => setExcluindo(true)}
+                  aria-label="Excluir carga"
+                  title="Excluir carga"
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                </button>
+              )}
+              <BotaoExecutar emAndamento={emAndamento} desativado={!carga.ativo} aoClicar={executar} tamanho="grande" />
+            </div>
             {erro && <span className="text-xs text-destructive">{erro}</span>}
           </div>
         )}
       </header>
+
+      {excluindo && (
+        <DialogoExclusao
+          titulo={
+            <>
+              Excluir a carga <span className="break-all font-mono">{carga.nome}</span>?
+            </>
+          }
+          descricao={
+            <ul className="flex list-disc flex-col gap-1 pl-4">
+              <li>Sai do LurkQVD com o agendamento e o histórico de execuções{historico.length ? ` (${historico.length >= 20 ? "20 ou mais" : historico.length})` : ""}.</li>
+              <li>Sai também das aplicações em que estiver.</li>
+              <li>A auditoria continua registrando o que ela era e quem excluiu.</li>
+            </ul>
+          }
+          rotuloBotao="Excluir carga"
+          aoConfirmar={async () => avisoQlik((await api.removerCarga(carga.id, apagarQlik)).qlik)}
+          aoConcluir={() => navegar({ tela: "cargas" })}
+          aoFechar={() => setExcluindo(false)}
+        >
+          {emAndamento && <p className="alerta alerta-aviso text-sm">A carga está na fila ou rodando: cancele ou espere terminar para excluir.</p>}
+          <OpcaoExclusao
+            marcada={apagarQlik}
+            aoMudar={setApagarQlik}
+            desativada={!carga.file_id}
+            rotulo="Apagar também o QVD na Qlik Cloud"
+            dica={
+              carga.file_id ? (
+                <>
+                  <span className="font-mono">{carga.qlik_path}</span>: apps que leem esse arquivo deixam de encontrá-lo.
+                </>
+              ) : (
+                "A carga nunca publicou: não há arquivo na Qlik."
+              )
+            }
+          />
+        </DialogoExclusao>
+      )}
 
       {movendo && (
         <MoverDestino

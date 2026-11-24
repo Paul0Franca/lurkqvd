@@ -6,6 +6,8 @@ import { descrever } from "../lib/agenda";
 import { dataHora, relativo, tamanho } from "../lib/formato";
 import { link, navegar } from "../rotas";
 import AplicacaoForm from "./AplicacaoForm";
+import DialogoExclusao, { OpcaoExclusao } from "./DialogoExclusao";
+import { avisoQlik } from "../lib/exclusao";
 import {
   etapaDaCarga,
   etapaDoReload,
@@ -74,27 +76,10 @@ function Conteudo({
 }) {
   const { rodada, emAndamento, executar, cancelar, ocupado, erro } = useRodadaAplicacao(api, a, aoMudar);
   const [editando, setEditando] = useState(false);
-  const [confirmarRemocao, setConfirmarRemocao] = useState(false);
-  const [erroRemocao, setErroRemocao] = useState<string | null>(null);
+  const [excluindo, setExcluindo] = useState(false);
   const admin = usuario.papel === "admin";
   const podeExecutar = admin || usuario.papel === "editor";
   const ultimaTerminada = historico.find((h) => h.terminou) ?? null;
-
-  useEffect(() => {
-    if (!confirmarRemocao) return;
-    const t = setTimeout(() => setConfirmarRemocao(false), 4000);
-    return () => clearTimeout(t);
-  }, [confirmarRemocao]);
-
-  async function remover() {
-    try {
-      await api.removerAplicacao(a.id);
-      navegar({ tela: "cargas" });
-    } catch (e) {
-      setErroRemocao((e as Error).message);
-      setConfirmarRemocao(false);
-    }
-  }
 
   // o que o fluxo mostra: a rodada ao vivo ou, sem rodada, o último estado de cada carga.
   // Rodada recém-criada (pendente) ainda não tem cargas: o worker as liga ao pegá-la, segundos depois.
@@ -153,13 +138,12 @@ function Conteudo({
                 </button>
                 <button
                   type="button"
-                  className={confirmarRemocao ? "btn-perigo inline-flex items-center gap-1.5" : "icone-btn"}
-                  onClick={() => (confirmarRemocao ? remover() : setConfirmarRemocao(true))}
-                  aria-label="Remover aplicação"
-                  title="Remover aplicação (as cargas continuam existindo)"
+                  className="icone-btn"
+                  onClick={() => setExcluindo(true)}
+                  aria-label="Excluir aplicação"
+                  title="Excluir aplicação"
                 >
                   <Trash2 className="h-4 w-4" aria-hidden="true" />
-                  {confirmarRemocao && "Confirmar remoção"}
                 </button>
               </>
             )}
@@ -174,9 +158,11 @@ function Conteudo({
                 </button>
               ))}
           </div>
-          {(erro || erroRemocao) && <span className="text-xs text-destructive">{erro ?? erroRemocao}</span>}
+          {erro && <span className="text-xs text-destructive">{erro}</span>}
         </div>
       </header>
+
+      {excluindo && <ExcluirAplicacao api={api} aplicacao={a} emAndamento={emAndamento} aoFechar={() => setExcluindo(false)} />}
 
       <Fluxo
         nos={nos}
@@ -222,6 +208,78 @@ function Conteudo({
         />
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------- //
+// Excluir a aplicação (e, se pedir, as cargas que só estão nela)
+// ---------------------------------------------------------------------- //
+function ExcluirAplicacao({ api, aplicacao: a, emAndamento, aoFechar }: {
+  api: Api;
+  aplicacao: Aplicacao;
+  emAndamento: boolean;
+  aoFechar: () => void;
+}) {
+  const [levarCargas, setLevarCargas] = useState(false);
+  const [apagarQlik, setApagarQlik] = useState(false);
+  // cargas que também estão em outra aplicação continuam existindo: só as exclusivas saem
+  const [emOutras, setEmOutras] = useState<Set<number> | null>(null);
+
+  useEffect(() => {
+    api
+      .aplicacoes()
+      .then((todas) => setEmOutras(new Set(todas.filter((o) => o.id !== a.id).flatMap((o) => o.cargas.map((c) => c.id)))))
+      .catch(() => setEmOutras(new Set()));
+  }, [api, a.id]);
+
+  const exclusivas = emOutras ? a.cargas.filter((c) => !emOutras.has(c.id)) : [];
+  const compartilhadas = a.cargas.length - exclusivas.length;
+
+  return (
+    <DialogoExclusao
+      titulo={<>Excluir a aplicação {a.nome}?</>}
+      descricao={
+        <p>
+          Sai com o agendamento e o histórico de execuções. O app da Qlik não é alterado.
+          {!levarCargas && a.cargas.length > 0 && " As cargas continuam existindo."}
+        </p>
+      }
+      rotuloBotao={levarCargas && exclusivas.length ? `Excluir aplicação e ${exclusivas.length} ${exclusivas.length === 1 ? "carga" : "cargas"}` : "Excluir aplicação"}
+      aoConfirmar={async () => avisoQlik((await api.removerAplicacao(a.id, { levarCargas, apagarQlik: levarCargas && apagarQlik })).qlik)}
+      aoConcluir={() => navegar({ tela: "cargas" })}
+      aoFechar={aoFechar}
+    >
+      {emAndamento && <p className="alerta alerta-aviso text-sm">A aplicação está executando: cancele ou espere terminar para excluir.</p>}
+      {a.cargas.length > 0 && (
+        <OpcaoExclusao
+          marcada={levarCargas}
+          aoMudar={setLevarCargas}
+          desativada={!emOutras || !exclusivas.length}
+          rotulo="Excluir também as cargas que só estão nesta aplicação"
+          dica={
+            !emOutras ? (
+              "Conferindo as outras aplicações…"
+            ) : exclusivas.length ? (
+              <>
+                {exclusivas.map((c) => c.nome).join(", ")}
+                {compartilhadas > 0 && `. ${compartilhadas} ${compartilhadas === 1 ? "carga está" : "cargas estão"} em outra aplicação e ${compartilhadas === 1 ? "continua" : "continuam"}.`}
+                {" "}O histórico delas sai junto.
+              </>
+            ) : (
+              "Todas as cargas desta aplicação também estão em outra: nenhuma seria excluída."
+            )
+          }
+        />
+      )}
+      {levarCargas && exclusivas.length > 0 && (
+        <OpcaoExclusao
+          marcada={apagarQlik}
+          aoMudar={setApagarQlik}
+          rotulo="Apagar também os QVDs dessas cargas na Qlik Cloud"
+          dica="Apps que leem esses arquivos deixam de encontrá-los."
+        />
+      )}
+    </DialogoExclusao>
   );
 }
 

@@ -118,13 +118,21 @@ def alterar_aplicacao(aplicacao_id: int, body: AplicacaoAlterar, repo: Repo, usu
     return aplicacao
 
 
-@router.delete("/aplicacoes/{aplicacao_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remover_aplicacao(aplicacao_id: int, repo: Repo, usuario: Admin):
+@router.delete("/aplicacoes/{aplicacao_id}")
+def remover_aplicacao(aplicacao_id: int, repo: Repo, usuario: Admin, levar_cargas: bool = False, apagar_qlik: bool = False) -> dict:
+    """Remove a aplicação. levar_cargas=true exclui junto as cargas que só estão nela (as que também estão em
+    outra aplicação continuam); com apagar_qlik=true, os QVDs dessas cargas são apagados na Qlik também."""
+    from src.lurkqvd.api.main import apagar_arquivos_qlik  # main inclui este router: import aqui evita o ciclo
+
     try:
-        if not repo.remover_aplicacao(aplicacao_id, usuario["id"]):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Aplicação não encontrada.")
+        removida = repo.remover_aplicacao(aplicacao_id, usuario["id"], levar_cargas=levar_cargas)
     except OperacaoNaoPermitida as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+    if not removida:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Aplicação não encontrada.")
+    qlik = apagar_arquivos_qlik(repo, removida["cargas"], usuario["id"]) if apagar_qlik else None
+    return {"nome": removida["nome"], "cargas_removidas": [c["nome"] for c in removida["cargas"]],
+            "qlik": qlik.model_dump() if qlik else None}
 
 
 @router.post("/aplicacoes/mover-carga")

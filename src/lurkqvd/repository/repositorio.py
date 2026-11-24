@@ -21,6 +21,7 @@ from src.lurkqvd.pipeline import memoria
 from src.lurkqvd.pipeline.gerador_qvd import CargaQvd, ResultadoCarga
 from src.lurkqvd.repository.acesso import AcessoMixin, LoginJaExiste  # noqa: F401
 from src.lurkqvd.repository.aplicacoes import AplicacaoJaEmExecucao, AplicacoesMixin  # noqa: F401
+from src.lurkqvd.repository.aplicacoes import STATUS_ATIVOS as STATUS_ATIVOS_APLICACAO
 from src.lurkqvd.repository.notificacoes import NotificacoesMixin
 
 DSN_PADRAO = "postgresql://lurkqvd:lurkqvd_dev@127.0.0.1:5433/lurkqvd"  # Postgres de teste (docker)
@@ -365,6 +366,66 @@ class Repositorio(AcessoMixin, AplicacoesMixin, NotificacoesMixin):
                 "para": {"connection_id": connection_id, "qlik_path": qlik_path},
             })
         return self.buscar_carga_detalhe(carga_id)
+
+    def remover_carga(self, carga_id: int, usuario_id: int | None) -> dict | None:
+        """Exclui a carga e o histórico de execuções dela (a auditoria guarda o que era).
+        Retorna a carga removida (com file_id, para quem quiser apagar o arquivo na Qlik); None se não existir."""
+        with self._conn() as conn:
+            removidas = self._remover_cargas(conn, [carga_id], usuario_id)
+        return removidas[0] if removidas else None
+
+    def _remover_cargas(self, conn: psycopg.Connection, carga_ids: list[int], usuario_id: int | None,
+                        extra_auditoria: dict | None = None) -> list[dict]:
+        """Exclui cargas na transação de quem chama. Recusa (OperacaoNaoPermitida) se alguma estiver na fila,
+        rodando ou numa aplicação que está executando agora."""
+        cargas = conn.execute(
+            "SELECT id, nome, connection_id, qlik_path, file_id FROM lurkqvd.cargas WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
+            (list(carga_ids),),
+        ).fetchall()
+        if not cargas:
+            return []
+        ids = [c["id"] for c in cargas]
+        ocupada = conn.execute(
+            """
+            SELECT c.nome FROM lurkqvd.execucoes e JOIN lurkqvd.cargas c ON c.id = e.carga_id
+             WHERE e.carga_id = ANY(%s) AND e.status IN ('pendente', 'rodando') LIMIT 1
+            """,
+            (ids,),
+        ).fetchone()
+        if ocupada:
+            raise OperacaoNaoPermitida(f"A carga {ocupada['nome']} está na fila ou rodando. Cancele ou espere terminar.")
+        # rodada pendente ainda não ligou as cargas (o worker liga ao pegá-la): confere também pela composição atual
+        app = conn.execute(
+            """
+            SELECT a.nome FROM lurkqvd.execucoes_aplicacao x JOIN lurkqvd.aplicacoes a ON a.id = x.aplicacao_id
+             WHERE x.status = ANY(%s)
+               AND (EXISTS (SELECT 1 FROM lurkqvd.aplicacao_cargas ac WHERE ac.aplicacao_id = a.id AND ac.carga_id = ANY(%s))
+                    OR EXISTS (SELECT 1 FROM lurkqvd.execucao_aplicacao_cargas xc
+                                WHERE xc.execucao_aplicacao_id = x.id AND xc.carga_id = ANY(%s)))
+             LIMIT 1
+            """,
+            (list(STATUS_ATIVOS_APLICACAO), ids, ids),
+        ).fetchone()
+        if app:
+            raise OperacaoNaoPermitida(f"A aplicação {app['nome']} está executando com essa carga. Cancele ou espere terminar.")
+
+        execucoes = {r["carga_id"]: r["n"] for r in conn.execute(
+            "SELECT carga_id, count(*) AS n FROM lurkqvd.execucoes WHERE carga_id = ANY(%s) GROUP BY carga_id", (ids,)
+        ).fetchall()}
+        # execucao_aplicacao_cargas aponta para execucoes sem cascade: sai antes do histórico
+        conn.execute("DELETE FROM lurkqvd.execucao_aplicacao_cargas WHERE carga_id = ANY(%s)", (ids,))
+        conn.execute("DELETE FROM lurkqvd.execucoes WHERE carga_id = ANY(%s)", (ids,))
+        conn.execute("DELETE FROM lurkqvd.cargas WHERE id = ANY(%s)", (ids,))
+        for c in cargas:
+            self._auditar(conn, usuario_id, "carga.remover", "carga", c["id"], {
+                "nome": c["nome"],
+                "connection_id": str(c["connection_id"]) if c["connection_id"] else None,
+                "qlik_path": c["qlik_path"],
+                "file_id": str(c["file_id"]) if c["file_id"] else None,
+                "execucoes": execucoes.get(c["id"], 0),
+                **(extra_auditoria or {}),
+            })
+        return cargas
 
     def buscar_carga_detalhe(self, carga_id: int) -> dict | None:
         with self._conn() as conn:
@@ -1154,7 +1215,7 @@ class Repositorio(AcessoMixin, AplicacoesMixin, NotificacoesMixin):
     # Auditoria
     # ------------------------------------------------------------------ #
     CATEGORIAS_AUDITORIA = {
-        "cargas": ("carga.criar", "carga.alterar", "carga.destino", "pasta.criar"),
+        "cargas": ("carga.criar", "carga.alterar", "carga.destino", "carga.remover", "carga.arquivo_qlik", "pasta.criar"),
         "execucoes": ("carga.executar", "execucao.cancelar", "aplicacao.executar", "aplicacao.cancelar"),
         "aplicacoes": ("aplicacao.criar", "aplicacao.alterar", "aplicacao.remover", "aplicacao.mover_carga"),
         "acessos": ("usuario.criar", "usuario.alterar", "usuario.redefinir_senha", "usuario.trocar_senha",
@@ -1185,7 +1246,7 @@ class Repositorio(AcessoMixin, AplicacoesMixin, NotificacoesMixin):
             SELECT a.id, a.acao, a.alvo_tipo, a.alvo_id, a.detalhes, a.criado_em,
                    a.usuario_id, u.nome AS usuario_nome, u.email AS usuario_email, u.foto_url AS usuario_foto,
                    CASE a.alvo_tipo
-                        WHEN 'carga'   THEN c.nome
+                        WHEN 'carga'   THEN COALESCE(c.nome, a.detalhes->>'nome')
                         WHEN 'usuario' THEN COALESCE(ua.nome, ua.email)
                         WHEN 'fonte'   THEN COALESCE(fo.nome, a.detalhes->>'nome')
                         WHEN 'token'   THEN a.detalhes->>'nome'
