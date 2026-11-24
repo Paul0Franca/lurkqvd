@@ -2,7 +2,7 @@
 // Menu lateral com as seções; as que ainda não existem aparecem em "Em breve".
 
 import { useEffect, useRef, useState } from "react";
-import { Bell, Cable, Cloud, Database, KeyRound, ScrollText, Server, Users, X, type LucideIcon } from "lucide-react";
+import { Bell, Cable, Cloud, Database, KeyRound, Megaphone, ScrollText, Server, Users, X, type LucideIcon } from "lucide-react";
 import type { Api, Usuario } from "../api";
 import UsuariosAcesso from "./UsuariosAcesso";
 import WorkerAgenda from "./WorkerAgenda";
@@ -12,8 +12,9 @@ import FontesDados from "./FontesDados";
 import Segredos from "./Segredos";
 import ApiLurkqvd from "./ApiLurkqvd";
 import Notificacoes from "./Notificacoes";
+import AvisosConfig from "./AvisosConfig";
 
-type Secao = "usuarios" | "qlik" | "fontes" | "segredos" | "api" | "worker" | "notificacoes" | "auditoria";
+type Secao = "usuarios" | "qlik" | "fontes" | "segredos" | "api" | "worker" | "notificacoes" | "avisos" | "auditoria";
 
 const SECOES: { id: Secao; nome: string; icone: LucideIcon; pronta: boolean }[] = [
   { id: "usuarios", nome: "Usuários e acesso", icone: Users, pronta: true },
@@ -23,6 +24,7 @@ const SECOES: { id: Secao; nome: string; icone: LucideIcon; pronta: boolean }[] 
   { id: "segredos", nome: "Segredos", icone: KeyRound, pronta: true },
   { id: "api", nome: "API do LurkQVD", icone: Cable, pronta: true },
   { id: "notificacoes", nome: "Notificações", icone: Bell, pronta: true },
+  { id: "avisos", nome: "Avisos na ferramenta", icone: Megaphone, pronta: true },
   { id: "auditoria", nome: "Auditoria", icone: ScrollText, pronta: true },
 ];
 
@@ -100,6 +102,7 @@ export default function Configuracoes({ api, usuario, aoFechar }: Props) {
             {secao === "segredos" && <Segredos api={api} />}
             {secao === "api" && <ApiLurkqvd api={api} />}
             {secao === "notificacoes" && <Notificacoes api={api} usuario={usuario} />}
+            {secao === "avisos" && <AvisosConfig api={api} />}
             {secao === "auditoria" && <Auditoria api={api} />}
           </div>
         </div>

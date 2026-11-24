@@ -15,7 +15,7 @@ export default function FluxoQVD({ tom = "tema" }: { tom?: "tema" | "escuro" }) 
   const escuro = tom === "escuro";
   return (
     <ol className={`relative grid grid-cols-3 ${escuro ? "fluxo-qvd-escuro" : ""}`} aria-label="Caminho de uma carga">
-      {/* trilho que liga as etapas; preenche em ciano uma vez, ao abrir a página */}
+      {/* trilho que liga as etapas; preenche em verde-jade uma vez, ao abrir a página */}
       <span aria-hidden="true" className={`absolute left-5 right-[calc(33.333%-1.25rem)] top-5 h-px ${escuro ? "bg-white/10" : "bg-border"}`} />
       <span
         aria-hidden="true"

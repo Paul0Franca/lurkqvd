@@ -22,6 +22,7 @@ from src.lurkqvd.pipeline.gerador_qvd import CargaQvd, ResultadoCarga
 from src.lurkqvd.repository.acesso import AcessoMixin, LoginJaExiste  # noqa: F401
 from src.lurkqvd.repository.aplicacoes import AplicacaoJaEmExecucao, AplicacoesMixin  # noqa: F401
 from src.lurkqvd.repository.aplicacoes import STATUS_ATIVOS as STATUS_ATIVOS_APLICACAO
+from src.lurkqvd.repository.avisos import AvisosMixin
 from src.lurkqvd.repository.notificacoes import NotificacoesMixin
 
 DSN_PADRAO = "postgresql://lurkqvd:lurkqvd_dev@127.0.0.1:5433/lurkqvd"  # Postgres de teste (docker)
@@ -57,7 +58,7 @@ def proximas_execucoes(cron: str, fuso: str | None = None, quantidade: int = 1, 
         raise AgendamentoInvalido(f"Agendamento inválido: {e}") from e
 
 
-class Repositorio(AcessoMixin, AplicacoesMixin, NotificacoesMixin):
+class Repositorio(AcessoMixin, AplicacoesMixin, NotificacoesMixin, AvisosMixin):
     def __init__(self, dsn: str | None = None) -> None:
         self.dsn = dsn or os.getenv("LURKQVD_PG_DSN", DSN_PADRAO)
 
@@ -1222,7 +1223,7 @@ class Repositorio(AcessoMixin, AplicacoesMixin, NotificacoesMixin):
                     "usuario.completar_conta", "convite.criar", "convite.remover", "token.criar", "token.revogar"),
         "sistema": ("agenda.pausar", "agenda.retomar", "config.alterar", "config.qlik",
                     "fonte.criar", "fonte.alterar", "fonte.padrao", "fonte.remover",
-                    "config.smtp", "config.smtp_remover", "config.notificacoes"),
+                    "config.smtp", "config.smtp_remover", "config.notificacoes", "aviso.publicar", "aviso.remover"),
         "logins": ("usuario.login",),
     }
 
@@ -1250,6 +1251,7 @@ class Repositorio(AcessoMixin, AplicacoesMixin, NotificacoesMixin):
                         WHEN 'usuario' THEN COALESCE(ua.nome, ua.email)
                         WHEN 'fonte'   THEN COALESCE(fo.nome, a.detalhes->>'nome')
                         WHEN 'token'   THEN a.detalhes->>'nome'
+                        WHEN 'aviso'   THEN a.detalhes->>'titulo'
                         ELSE a.alvo_id END AS alvo_nome
               FROM lurkqvd.auditoria a
               LEFT JOIN lurkqvd.usuarios u  ON u.id = a.usuario_id

@@ -10,10 +10,19 @@ mova o que estiver em "Não lançado" para uma seção `## [X.Y.Z] - AAAA-MM-DD`
 ## [Não lançado]
 
 ### Adicionado
+- Avisos dentro da ferramenta: sino no topo com a contagem de não lidos e um balão sobre a tela (fundo
+  desfocado) para os avisos novos. O admin publica em Configurações › Avisos na ferramenta, escolhendo o
+  público (todo mundo, editores e admins ou só admins), se abre na tela e até quando fica. A migração 016
+  cria as tabelas e a primeira novidade: a página do LurkQVD em https://datalurk.com.br/lurkqvd.
+- Link para https://datalurk.com.br/lurkqvd onde aparece "DataLurk" (login, menu do usuário, e-mails, README).
 - Excluir cargas (com opção de apagar o QVD na Qlik) e, ao excluir uma aplicação, levar junto as cargas
   que só estão nela.
 
 ### Mudado
+- Identidade da família DataLurk: o LurkQVD usa o verde-jade (`#3CCB8F`; `#15724C` para texto em fundo
+  claro) no lugar do ciano, que fica só para a marca-mãe. Ícone, favicon e logo dos e-mails passam a ser o
+  criativo oficial (bloco grafite, Lurkzinho e plano verde-jade); nomes no padrão "Lurk" 700 + "QVD" 400 e
+  "Data" 400 + "Lurk" 700, sem o peso 300 da Sora.
 - Envio à Qlik: `LURKQVD_LIMITE_ENVIO_DIRETO_MB` passa de 500 para 100. Arquivos maiores sobem em pedaços
   retomáveis; um QVD de 452 MB numa requisição só caía com "The write operation timed out".
 - O envio direto que cai passa para o envio em pedaços em vez de repetir o arquivo inteiro (eram até 24

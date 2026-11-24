@@ -2,8 +2,8 @@
 
 Cliente de e-mail não é navegador: nada de variáveis CSS, SVG ou flexbox. Por isso:
   - layout em tabelas, estilos inline e as cores do tema claro do front escritas por extenso;
-  - a sub-logo vai como PNG embutido na mensagem (cid:), gerado a partir das formas do Logo.tsx
-    (assets/logo_email.png); não depende de nenhum servidor no ar para aparecer;
+  - o ícone do LurkQVD vai como PNG embutido na mensagem (cid:), o criativo oficial da marca reduzido
+    para 96 px (assets/logo_email.png); não depende de nenhum servidor no ar para aparecer;
   - Sora quando o cliente aceita web font (Apple Mail, iOS); senão, Segoe UI/Arial.
 
 Cada função devolve um Email (assunto, texto puro e HTML). O texto puro vai junto para quem
@@ -23,13 +23,14 @@ SUPERFICIE_2 = "#e7e6df"
 TEXTO = "#121417"
 APAGADO = "#5f6168"
 BORDA = "#dad9d1"
-ACENTO = "#0e7490"
+ACENTO = "#15724c"  # verde-jade do LurkQVD para texto e botões em fundo claro
 OK_BG, OK_FG = "#e3f1ea", "#1d6b47"
 ERRO_BG, ERRO_FG = "#fbe7e5", "#a33a2e"
 # identidade (Logo.tsx)
 GRAFITE = "#121417"
 OFFWHITE = "#F2F1EC"
-CIANO = "#22D3EE"
+JADE = "#3CCB8F"  # plano do LurkQVD
+SITE_LURKQVD = "https://datalurk.com.br/lurkqvd"
 
 FONTE = "Sora,'Segoe UI',Helvetica,Arial,sans-serif"
 # sem Cascadia Code: as ligaduras dela trocam ">=" por "≥" no SQL das mensagens de erro
@@ -109,7 +110,7 @@ def bloco_codigo(texto: str) -> str:
 # ---------------------------------------------------------------------- #
 def layout(*, titulo: str, chamada: str, corpo: str, rotulo: str | None = None, rodape: str = "",
            previa: str = "") -> str:
-    """Página do e-mail: cabeçalho escuro com a marca e o horizonte ciano (como na tela de login),
+    """Página do e-mail: cabeçalho escuro com a marca e o horizonte verde-jade (como na tela de login),
     cartão branco com o conteúdo e rodapé.
 
     chamada: parágrafo de abertura (HTML). previa: texto que o cliente mostra na lista de e-mails.
@@ -121,7 +122,7 @@ def layout(*, titulo: str, chamada: str, corpo: str, rotulo: str | None = None, 
 <html lang="pt-BR"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light">
-<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&display=swap" rel="stylesheet">
 <title>{_e(titulo)}</title>
 </head>
 <body style="margin:0;padding:0;background:{BG}">
@@ -133,16 +134,16 @@ def layout(*, titulo: str, chamada: str, corpo: str, rotulo: str | None = None, 
     <tr><td bgcolor="{GRAFITE}" style="background:{GRAFITE};border-radius:16px 16px 0 0;padding:20px 28px 18px">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
         <td style="vertical-align:middle">
-          <img src="cid:{CID_LOGO}" width="43" height="32" alt="" style="display:inline-block;vertical-align:middle;border:0">
-          <span style="display:inline-block;vertical-align:middle;margin-left:8px;font-family:{FONTE};font-size:19px;letter-spacing:-.02em;color:{OFFWHITE}"><b style="font-weight:700">Lurk</b><span style="font-weight:300">QVD</span></span>
+          <img src="cid:{CID_LOGO}" width="32" height="32" alt="" style="display:inline-block;vertical-align:middle;border:0">
+          <span style="display:inline-block;vertical-align:middle;margin-left:8px;font-family:{FONTE};font-size:19px;letter-spacing:-.02em;color:{OFFWHITE}"><b style="font-weight:700">Lurk</b><span style="font-weight:400">QVD</span></span>
         </td>
         <td align="right" style="vertical-align:middle;font-family:{FONTE};font-size:12px;letter-spacing:-.01em;color:#8f9093">
-          <b style="font-weight:700">Data</b><span style="font-weight:300">Lurk</span>
+          <a href="{SITE_LURKQVD}" style="color:#8f9093;text-decoration:none"><span style="font-weight:400">Data</span><b style="font-weight:700">Lurk</b></a>
         </td>
       </tr></table>
     </td></tr>
     <!-- horizonte -->
-    <tr><td height="3" bgcolor="{CIANO}" style="height:3px;line-height:3px;font-size:0;background:{CIANO};background-image:linear-gradient(90deg,{GRAFITE},{CIANO} 25%,{CIANO} 75%,{GRAFITE})">&nbsp;</td></tr>
+    <tr><td height="3" bgcolor="{JADE}" style="height:3px;line-height:3px;font-size:0;background:{JADE};background-image:linear-gradient(90deg,{GRAFITE},{JADE} 25%,{JADE} 75%,{GRAFITE})">&nbsp;</td></tr>
     <!-- conteúdo -->
     <tr><td bgcolor="{SUPERFICIE}" style="background:{SUPERFICIE};border:1px solid {BORDA};border-top:0;border-radius:0 0 16px 16px;padding:30px 28px 26px">
       {etiqueta}
@@ -151,7 +152,7 @@ def layout(*, titulo: str, chamada: str, corpo: str, rotulo: str | None = None, 
       {corpo}
       <p style="margin:28px 0 0;padding-top:16px;border-top:1px solid {BORDA};font-family:{FONTE};font-size:12px;line-height:1.55;color:{APAGADO}">{rodape or "E-mail automático do LurkQVD. Os avisos são configurados em Configurações › Notificações."}</p>
     </td></tr>
-    <tr><td align="center" style="padding:18px 8px 0;font-family:{FONTE};font-size:11px;color:#8f9093">© {ano} DataLurk · Tem muito mais nos seus dados do que você vê.</td></tr>
+    <tr><td align="center" style="padding:18px 8px 0;font-family:{FONTE};font-size:11px;color:#8f9093">© {ano} <a href="{SITE_LURKQVD}" style="color:#8f9093;text-decoration:underline">DataLurk</a> · Tem muito mais nos seus dados do que você vê.</td></tr>
   </table>
 </td></tr>
 </table>

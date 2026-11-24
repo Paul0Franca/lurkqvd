@@ -11,10 +11,11 @@ import CargasLista from "./components/CargasLista";
 import AplicacaoDetalhe from "./components/AplicacaoDetalhe";
 import NovaCargaPagina from "./components/NovaCargaPagina";
 import { link, useRota } from "./rotas";
-import { Assinatura, SubLogoQVD } from "./components/Logo";
+import { Assinatura, IconeQVD } from "./components/Logo";
 import MenuUsuario from "./components/MenuUsuario";
 import { BotaoTema } from "./components/Tema";
 import Configuracoes from "./components/Configuracoes";
+import CentralAvisos from "./components/Avisos";
 import { Settings } from "lucide-react";
 
 /** true quando a página já rolou um pouco (o topo muda de visual). */
@@ -99,7 +100,7 @@ export default function App() {
       <header className="topo" data-rolado={rolado || undefined}>
         <div className="flex items-center gap-8">
           <a href={link({ tela: "painel" })} className="marca-topo" aria-label="LurkQVD, ir para o painel">
-            <SubLogoQVD tamanho={30} corForma="currentColor" corOlhos="var(--lq-surface)" pisca />
+            <IconeQVD tamanho={30} pisca />
             <Assinatura />
           </a>
           <nav aria-label="Seções" className="abas">
@@ -115,6 +116,7 @@ export default function App() {
           </nav>
         </div>
         <div className="flex items-center gap-1.5">
+          <CentralAvisos api={api} />
           <BotaoTema />
           {usuario.papel === "admin" && (
             <button

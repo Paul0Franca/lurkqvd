@@ -1,14 +1,14 @@
-// Identidade DataLurk.
+// Identidade DataLurk (criativos oficiais em criativo_marca/, guia da marca).
 //
-// - Bichinho "espiando": meia-lua com dois olhos que surge por trás de uma linha.
-// - Sub-logo do LurkQVD: o mesmo bichinho espiando por cima de três linhas de dados
-//   (as linhas de uma tabela que vira QVD). Mesma família, leitura própria.
+// - Lurkzinho "espiando": meia-lua com dois olhos que surge por trás de uma linha (o plano).
+// - Cada produto da família tem a cor do seu plano: DataLurk ciano, LurkQVD verde-jade.
+//   Dentro do LurkQVD o verde-jade é o ponto de luz; o ciano fica só para a marca-mãe.
 
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 
 const GRAFITE = "#121417";
 const OFFWHITE = "#F2F1EC";
-const CIANO = "#22D3EE";
+const JADE = "#3CCB8F"; // plano do LurkQVD
 
 /* ------------------------------------------------------------------ */
 /* Olhos que seguem o cursor (só quando há mouse e animação liberada)  */
@@ -46,56 +46,66 @@ function useOlharCursor(ativo: boolean) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Sub-logo do LurkQVD                                                 */
+/* Ícone do LurkQVD (criativo oficial da marca): bloco grafite, o      */
+/* Lurkzinho off-white e o plano verde-jade. Não trocar as cores.      */
 /* ------------------------------------------------------------------ */
-interface SubLogoProps {
+interface IconeProps {
   tamanho?: number;
-  /** cor do bichinho; os olhos usam corOlhos */
-  corForma?: string;
-  corOlhos?: string;
   pisca?: boolean;
   className?: string;
 }
 
-export function SubLogoQVD({
-  tamanho = 40,
-  corForma = OFFWHITE,
-  corOlhos = GRAFITE,
-  pisca = false,
-  className,
-}: SubLogoProps) {
+export function IconeQVD({ tamanho = 40, pisca = false, className }: IconeProps) {
+  const id = useId().replace(/:/g, "");
   const olho = pisca ? "lurk-pisca" : undefined;
   return (
-    <svg width={tamanho} height={tamanho} viewBox="0 0 200 200" className={className} aria-hidden="true">
-      {/* bichinho, um pouco mais alto que no logo-mãe para dar espaço às linhas */}
-      <path d="M50 112 A50 50 0 0 1 150 112 Z" fill={corForma} />
-      <circle className={olho} cx="110" cy="84" r="10" fill={corOlhos} />
-      <circle className={olho} cx="136" cy="84" r="10" fill={corOlhos} />
-      {/* três linhas de dados, decrescentes: a "tabela" que vira QVD */}
-      <rect x="22" y="110" width="156" height="12" rx="6" fill={CIANO} />
-      <rect x="22" y="134" width="118" height="12" rx="6" fill={CIANO} opacity="0.55" />
-      <rect x="22" y="158" width="78" height="12" rx="6" fill={CIANO} opacity="0.28" />
+    <svg width={tamanho} height={tamanho} viewBox="0 0 100 100" className={className} aria-hidden="true">
+      <defs>
+        <clipPath id={`bl-${id}`}>
+          <rect width="100" height="100" rx="23" />
+        </clipPath>
+      </defs>
+      <g clipPath={`url(#bl-${id})`}>
+        <rect width="100" height="100" fill={GRAFITE} />
+        <path d="M14 66 A36 36 0 0 1 86 66 Z" fill={OFFWHITE} />
+        <circle className={olho} cx="57" cy="46" r="7" fill={GRAFITE} />
+        <circle className={olho} cx="75" cy="46" r="7" fill={GRAFITE} />
+        <rect y="66" width="100" height="34" fill={JADE} />
+      </g>
     </svg>
   );
 }
 
-/** Assinatura do produto: "Lurk" + "QVD", no padrão da família (LurkBI, LurkReach). */
+/** Assinatura do produto: "Lurk" 700 + "QVD" 400, no padrão da família. */
 export function Assinatura({ className = "" }: { className?: string }) {
   return (
     <span className={`font-sora tracking-tight ${className}`}>
       <span className="font-bold">Lurk</span>
-      <span className="font-light">QVD</span>
+      <span className="font-normal">QVD</span>
     </span>
   );
 }
 
-/** Marca-mãe em texto, para a linha "por DataLurk". */
+/** Página do produto no site da DataLurk. */
+export const SITE_LURKQVD = "https://datalurk.com.br/lurkqvd";
+
+/** Marca-mãe em texto: "Data" 400 + "Lurk" 700. */
 export function DataLurk({ className = "" }: { className?: string }) {
   return (
     <span className={`font-sora tracking-tight ${className}`}>
-      <span className="font-bold">Data</span>
-      <span className="font-light">Lurk</span>
+      <span className="font-normal">Data</span>
+      <span className="font-bold">Lurk</span>
     </span>
+  );
+}
+
+/** "DataLurk" com link para a página do LurkQVD no site (abre em outra aba). */
+export function LinkDataLurk({ className = "", children }: { className?: string; children?: ReactNode }) {
+  return (
+    <a href={SITE_LURKQVD} target="_blank" rel="noopener noreferrer" className={`link-datalurk ${className}`}
+       title="LurkQVD no site da DataLurk">
+      {children ?? <DataLurk />}
+    </a>
   );
 }
 
@@ -107,8 +117,8 @@ const ESTRELAS: [number, number, number, number, number][] = [
 ];
 
 /* ------------------------------------------------------------------ */
-/* Cena do painel: o bichinho da DataLurk espiando por cima do         */
-/* horizonte, com o campo de dados embaixo.                            */
+/* Cena do login: o Lurkzinho espiando por cima do horizonte           */
+/* verde-jade do LurkQVD, com o campo de dados embaixo.                */
 /* ------------------------------------------------------------------ */
 export function CenaEspiando({ className }: { className?: string }) {
   const id = useId().replace(/:/g, "");
@@ -119,11 +129,11 @@ export function CenaEspiando({ className }: { className?: string }) {
     <svg viewBox="0 0 800 440" className={className} aria-hidden="true" preserveAspectRatio="xMidYMid meet">
       <defs>
         <linearGradient id={`hz-${id}`} x1="0" x2="1">
-          <stop offset="0" stopColor={CIANO} stopOpacity="0" />
-          <stop offset="0.25" stopColor={CIANO} stopOpacity="0.9" />
-          <stop offset="0.5" stopColor={CIANO} />
-          <stop offset="0.75" stopColor={CIANO} stopOpacity="0.9" />
-          <stop offset="1" stopColor={CIANO} stopOpacity="0" />
+          <stop offset="0" stopColor={JADE} stopOpacity="0" />
+          <stop offset="0.25" stopColor={JADE} stopOpacity="0.9" />
+          <stop offset="0.5" stopColor={JADE} />
+          <stop offset="0.75" stopColor={JADE} stopOpacity="0.9" />
+          <stop offset="1" stopColor={JADE} stopOpacity="0" />
         </linearGradient>
 
         {/* brilho do horizonte */}
@@ -163,14 +173,14 @@ export function CenaEspiando({ className }: { className?: string }) {
         className="lurk-ligacao"
         points="297,407 341,341 407,385 473,363 539,341"
         fill="none"
-        stroke={CIANO}
+        stroke={JADE}
         strokeWidth="1"
         strokeLinecap="round"
         strokeLinejoin="round"
         opacity="0.35"
       />
       {/* alguns pontos acesos: o que o bichinho está vendo */}
-      <g fill={CIANO}>
+      <g fill={JADE}>
         <circle className="lurk-ponto" cx="341" cy="341" r="2.4" />
         <circle className="lurk-ponto lurk-ponto-2" cx="473" cy="363" r="2.4" />
         <circle className="lurk-ponto lurk-ponto-3" cx="407" cy="385" r="2.4" />

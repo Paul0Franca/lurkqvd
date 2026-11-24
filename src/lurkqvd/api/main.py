@@ -1265,6 +1265,7 @@ def composicao_carga(carga_id: int, repo: Repo, _: Leitor):
 # ---------------------------------------------------------------------- #
 from src.lurkqvd.api import acesso as _acesso  # noqa: E402
 from src.lurkqvd.api import aplicacoes as _aplicacoes  # noqa: E402
+from src.lurkqvd.api import avisos as _avisos  # noqa: E402
 from src.lurkqvd.api import notificacoes as _notificacoes  # noqa: E402
 
 app.include_router(_acesso.router)
@@ -1272,3 +1273,4 @@ app.include_router(_aplicacoes.router)
 app.router.on_startup.append(_acesso.conferir_migracoes)
 app.router.on_startup.append(_acesso.preparar_admin_padrao)
 app.include_router(_notificacoes.router)
+app.include_router(_avisos.router)

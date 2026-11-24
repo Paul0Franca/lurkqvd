@@ -1,9 +1,9 @@
 // Adaptado de https://21st.dev/@jahed/components/sign-in
-// Mudanças: login com e-mail e senha (formulário vem de fora), identidade DataLurk/LurkQVD,
+// Mudanças: login com e-mail e senha (formulário vem de fora), identidade DataLurk/LurkQVD (verde-jade),
 // e o painel da direita virou uma cena: o bichinho espiando por cima dos dados.
 
 import React from "react";
-import { Assinatura, CenaEspiando, DataLurk, SubLogoQVD } from "@/components/Logo";
+import { Assinatura, CenaEspiando, IconeQVD, LinkDataLurk } from "@/components/Logo";
 
 export interface Destaque {
   titulo: string;
@@ -42,7 +42,7 @@ export const SignInPage: React.FC<SignInPageProps> = ({
       <section className="flex flex-1 justify-center px-8 py-8 sm:px-12 md:w-1/2 md:flex-none md:py-10">
         <div className="flex w-full max-w-[460px] flex-col justify-between gap-12">
         <header className="animate-element flex items-center gap-3">
-          <SubLogoQVD tamanho={38} corForma="currentColor" corOlhos="var(--background)" pisca className="text-foreground" />
+          <IconeQVD tamanho={38} pisca />
           <Assinatura className="text-xl" />
         </header>
 
@@ -68,7 +68,9 @@ export const SignInPage: React.FC<SignInPageProps> = ({
         </div>
 
         <footer className="animate-element animate-delay-400 flex items-end justify-between gap-6 text-xs text-muted-foreground">
-          <span>© {ANO} DataLurk</span>
+          <span>
+            © {ANO} <LinkDataLurk>DataLurk</LinkDataLurk>
+          </span>
           {ajuda && <span className="text-right">{ajuda}</span>}
         </footer>
         </div>
@@ -79,20 +81,20 @@ export const SignInPage: React.FC<SignInPageProps> = ({
         <div className="animate-slide-right animate-delay-300 relative flex h-full flex-col overflow-hidden rounded-[28px] bg-[#121417] ring-1 ring-white/[0.06]">
           {/* assinatura da marca-mãe no canto do painel */}
           <div className="absolute left-8 top-7 z-10 text-sm text-[#F2F1EC]/60">
-            <DataLurk />
+            <LinkDataLurk className="hover:text-[#F2F1EC]" />
           </div>
 
           {/* grade sutil de fundo */}
           <div className="lurk-grade pointer-events-none absolute inset-0" />
 
           {/* luz fria vinda do horizonte */}
-          <div className="pointer-events-none absolute left-1/2 top-[34%] h-[300px] w-[520px] -translate-x-1/2 rounded-full bg-[#22D3EE]/[0.07] blur-[80px]" />
+          <div className="pointer-events-none absolute left-1/2 top-[34%] h-[300px] w-[520px] -translate-x-1/2 rounded-full bg-[#3CCB8F]/[0.07] blur-[80px]" />
 
           <div className="relative flex flex-1 items-center justify-center px-10">
             {/* a frase fica presa à cena: logo abaixo do horizonte, sobre o campo de pontos */}
             <div className="relative w-full max-w-[600px]">
               <CenaEspiando className="block w-full" />
-              <p className="absolute inset-x-0 top-[64%] text-center font-sora text-lg font-light tracking-[-0.01em] text-[#F2F1EC]/85 xl:text-xl">
+              <p className="absolute inset-x-0 top-[64%] text-center font-sora text-lg font-normal tracking-[-0.01em] text-[#F2F1EC]/85 xl:text-xl">
                 Tem muito mais nos seus dados do que você vê.
               </p>
             </div>

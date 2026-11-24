@@ -53,8 +53,8 @@ front (React) ──Bearer token──> API (FastAPI)  ──> Postgres (lurkqvd
                                               SQL Server ──> GeradorQvd ──> Qlik Cloud
 ```
 
-- **API não executa cargas, só enfileira.** `src/lurkqvd/api/main.py` é a maior parte das rotas; `api/acesso.py`, `api/aplicacoes.py` e `api/notificacoes.py` são `APIRouter`s incluídos no fim de `main.py` (nesta versão do FastAPI eles aparecem em `app.routes` encapsulados; as rotas estão em `.original_router.routes`).
-- **Todo SQL fica no `Repositorio`** (`repository/repositorio.py`), composto por mixins (`AcessoMixin`, `AplicacoesMixin`, `NotificacoesMixin`, que usam `self._conn()` e `self._auditar()`). API, worker e scripts não escrevem SQL. DSN: `LURKQVD_PG_DSN`, padrão o Postgres do `docker-compose.dev.yml` (use `127.0.0.1`, não `localhost`: no Windows o `localhost` tenta IPv6 antes e demora).
+- **API não executa cargas, só enfileira.** `src/lurkqvd/api/main.py` é a maior parte das rotas; `api/acesso.py`, `api/aplicacoes.py`, `api/notificacoes.py` e `api/avisos.py` são `APIRouter`s incluídos no fim de `main.py` (nesta versão do FastAPI eles aparecem em `app.routes` encapsulados; as rotas estão em `.original_router.routes`).
+- **Todo SQL fica no `Repositorio`** (`repository/repositorio.py`), composto por mixins (`AcessoMixin`, `AplicacoesMixin`, `NotificacoesMixin`, `AvisosMixin`, que usam `self._conn()` e `self._auditar()`). API, worker e scripts não escrevem SQL. DSN: `LURKQVD_PG_DSN`, padrão o Postgres do `docker-compose.dev.yml` (use `127.0.0.1`, não `localhost`: no Windows o `localhost` tenta IPv6 antes e demora).
 - **Fila no Postgres**: `lurkqvd.execucoes` é ao mesmo tempo histórico e fila; o worker pega trabalho com `FOR UPDATE SKIP LOCKED`, então vários workers podem rodar juntos. Qualquer etapa nova de orquestração deve manter essa propriedade. Reserva de memória: `pegar_proxima` só entrega uma carga se o pico das últimas execuções dela (`memoria_pico_bytes`, medido pelo `memoria.Medidor`) couber no que os workers da mesma `LURKQVD_MAQUINA` não reservaram; a regra é a função pura `memoria.escolher`, e uma advisory lock por máquina serializa a decisão.
 - **Worker** (`worker.py`): o client da Qlik/gerador é criado só na 1ª carga (instalação nova sobe sem key). Laço principal (verifica a key da Qlik, enfileira o que o cron mandou, processa uma execução) + threads daemon para sinal de vida, orquestração de aplicações (`pendente → cargas → recarregando → sucesso/erro/cancelado`; com carga falhando, o app **não** é recarregado) e notificações. Progresso e cancelamento: a classe `Progresso` grava no Postgres a cada ~2s e, ao gravar, levanta `Cancelada` se pediram cancelamento.
 - **Pipeline** (`pipeline/`):
@@ -83,5 +83,11 @@ Login próprio, sem Google: `POST /auth/entrar` (e-mail + senha, hash `scrypt` e
 - Emergência: `python -m src.lurkqvd.cli definir-senha <login>`. 5 erros de login em 15 min por login+IP bloqueiam (em memória). `LURKQVD_AUTH_DEV=1` libera tudo como admin fictício (só local).
 
 ### Front
+
+Marca: o LurkQVD é da família DataLurk (criativos oficiais fora do repositório). Cor do produto verde-jade `#3CCB8F`
+(texto/botão em fundo claro: `#15724C`); o ciano `#22D3EE` é só da marca-mãe. Ícone = `IconeQVD` em `components/Logo.tsx`
+(não trocar cores); "Lurk" 700 + "QVD" 400, "Data" 400 + "Lurk" 700, Sora sem peso 300. Onde aparece "DataLurk", link
+para https://datalurk.com.br/lurkqvd (`LinkDataLurk`). Avisos na ferramenta: `components/Avisos.tsx` (sino do topo + balão
+com fundo desfocado, renderizado no `<body>` por portal porque o topo tem `backdrop-filter`) e `AvisosConfig.tsx` (admin).
 
 `front/src/api.ts` concentra o cliente HTTP e os tipos espelhando a API; componentes em `front/src/components/`, helpers em `front/src/lib/`. Config em `front/.env.local` (`VITE_API_URL`; variáveis `VITE_*` são públicas). Tema claro/escuro em `lib/tema.ts` (atributo `data-tema` no `<html>`). Fora do CORS, um 500 vira "Failed to fetch" no navegador: por isso `main.py` tem um handler de exceção registrado antes do middleware de CORS (`LURKQVD_CORS` lista as origens).
