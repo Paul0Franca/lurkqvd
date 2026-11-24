@@ -9,7 +9,15 @@ mova o que estiver em "Não lançado" para uma seção `## [X.Y.Z] - AAAA-MM-DD`
 
 ## [Não lançado]
 
+### Adicionado
+- Excluir cargas (com opção de apagar o QVD na Qlik) e, ao excluir uma aplicação, levar junto as cargas
+  que só estão nela.
+
 ### Mudado
+- Envio à Qlik: `LURKQVD_LIMITE_ENVIO_DIRETO_MB` passa de 500 para 100. Arquivos maiores sobem em pedaços
+  retomáveis; um QVD de 452 MB numa requisição só caía com "The write operation timed out".
+- O envio direto que cai passa para o envio em pedaços em vez de repetir o arquivo inteiro (eram até 24
+  reenvios: 6 tentativas × 4 do urllib3), e o tempo de envio dele é proporcional ao tamanho, não 30 s.
 - Gerador de QVD: a memória não cresce mais com os valores distintos. As colunas com muitos valores vão
   para o disco espalhadas por hash e são resolvidas no fim em grupos de tamanho fixo. Numa tabela de
   6 milhões de linhas e 74 colunas, o pico caiu de ~3 GB para ~850 MB, com o mesmo arquivo.

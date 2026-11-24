@@ -14,9 +14,12 @@ from urllib3.util.retry import Retry
 
 logger = logging.getLogger("lurkqvd.qlik")
 
-# Acima disso a Qlik não aceita o envio direto (multipart numa requisição só): o arquivo sobe
-# em pedaços para /temp-contents e o data file é criado/substituído apontando para ele.
-LIMITE_ENVIO_DIRETO = int(os.getenv("LURKQVD_LIMITE_ENVIO_DIRETO_MB", "500")) * 1024 * 1024
+# Até esse tamanho o arquivo vai direto (multipart numa requisição só); acima, sobe em pedaços
+# retomáveis para /temp-contents e o data file é criado/substituído apontando para ele.
+# A Qlik aceita direto até 500 MB, mas um arquivo grande numa requisição só cai com qualquer
+# engasgo da rede (452 MB davam "write operation timed out"): o retomável aguenta isso.
+LIMITE_ENVIO_DIRETO = int(os.getenv("LURKQVD_LIMITE_ENVIO_DIRETO_MB", "100")) * 1024 * 1024
+TENTATIVAS_ENVIO_DIRETO = 2  # depois disso, o envio direto que cai passa para o retomável
 TAMANHO_PEDACO = 8 * 1024 * 1024  # envio simples: leitura do arquivo em blocos de 8 MB
 
 # Envio retomável (tus): cada PATCH leva um pedaço; se cair, só esse pedaço é reenviado.
@@ -210,12 +213,18 @@ class QlikQvd:
                            Path(local_file).name, e)
             return self._enviar_temporario_simples(local_file, ao_enviar=ao_enviar)
 
-    def _sessao_upload(self) -> requests.Session:
-        """Sessão sem retry do urllib3: as repetições aqui são feitas por nós, sabendo a posição."""
+    def _sessao_sem_repeticao(self) -> requests.Session:
+        """Sessão sem retry do urllib3: num envio, cada repetição automática mandaria tudo de novo;
+        as repetições ficam com quem chama, que sabe o que já foi."""
         sessao = requests.Session()
         sessao.mount("https://", HTTPAdapter(max_retries=0))
-        sessao.headers.update({"Authorization": self._session.headers["Authorization"],
-                               "Tus-Resumable": TUS_VERSAO})
+        sessao.headers["Authorization"] = self._session.headers["Authorization"]
+        return sessao
+
+    def _sessao_upload(self) -> requests.Session:
+        """Sessão do envio retomável (sem retry do urllib3: as repetições aqui sabem a posição)."""
+        sessao = self._sessao_sem_repeticao()
+        sessao.headers["Tus-Resumable"] = TUS_VERSAO
         return sessao
 
     def _enviar_retomavel(self, local_file: str, ao_enviar=None) -> str:
@@ -374,22 +383,18 @@ class QlikQvd:
     def upload_file(self, connection_id: str | None, path: str, local_file: str, ao_enviar=None) -> dict:
         """Cria um novo data file. path = caminho na Qlik, ex.: "stage/vendas/fato_vendas.qvd".
 
-        Até 500 MB vai numa requisição só; acima disso, em pedaços via /temp-contents.
-        Se a conexão cair, repete com segurança: se a tentativa anterior já tinha criado o arquivo
-        (409), confere pelo caminho e pelo tamanho em vez de duplicar.
+        Até LIMITE_ENVIO_DIRETO vai numa requisição só; acima disso (ou se o envio direto cair),
+        em pedaços via /temp-contents. Se a conexão cair, repete com segurança: se a tentativa
+        anterior já tinha criado o arquivo (409), confere pelo caminho e pelo tamanho em vez de duplicar.
         Se já existir, use replace_file com o ID guardado no Postgres.
         """
         payload = {"name": path.strip("/")}
         if connection_id:
             payload["connectionId"] = connection_id
 
-        if self._grande(local_file):
-            payload["tempContentFileId"] = self._enviar_temporario(local_file, ao_enviar)
-        resposta = self._pedido_final(
-            "POST", f"{self.base_url}/data-files", payload,
-            None if "tempContentFileId" in payload else local_file,
+        resposta = self._enviar_conteudo(
+            "POST", f"{self.base_url}/data-files", payload, local_file, ao_enviar,
             achar_criado=lambda: self._achar_por_caminho(connection_id, path),
-            tamanho=os.path.getsize(local_file),
         )
         if isinstance(resposta, dict):  # a tentativa anterior criou; só a resposta tinha se perdido
             return resposta
@@ -398,26 +403,52 @@ class QlikQvd:
         self._raise_for_status(resposta)
         return self._conferir_tamanho(resposta.json(), local_file)
 
+    def _enviar_conteudo(self, metodo: str, url: str, payload: dict, local_file: str, ao_enviar=None, *,
+                         achar_criado=None):
+        """Cria/substitui o data file: direto (arquivo pequeno) ou pelo conteúdo temporário em pedaços.
+        Se o envio direto cair (rede engasgou com o arquivo numa requisição só), passa para os pedaços
+        em vez de repetir o arquivo inteiro."""
+        tamanho = os.path.getsize(local_file)
+        ja_tentou = False
+        if not self._grande(local_file):
+            try:
+                return self._pedido_final(metodo, url, payload, local_file, achar_criado=achar_criado,
+                                          tamanho=tamanho, tentativas=TENTATIVAS_ENVIO_DIRETO)
+            except (requests.ConnectionError, requests.Timeout) as e:
+                logger.warning("upload %s: envio direto de %.0f MB caiu (%s); passando para o envio em pedaços",
+                               Path(local_file).name, tamanho / 1024**2, type(e).__name__)
+                ja_tentou = True
+        payload = {**payload, "tempContentFileId": self._enviar_temporario(local_file, ao_enviar)}
+        return self._pedido_final(metodo, url, payload, None, achar_criado=achar_criado, tamanho=tamanho,
+                                  ja_tentou=ja_tentou)
+
     def _pedido_final(self, metodo: str, url: str, payload: dict, arquivo: str | None, *,
-                      achar_criado=None, tamanho: int | None = None, tentativas: int = 6):
+                      achar_criado=None, tamanho: int | None = None, tentativas: int = 6, ja_tentou: bool = False):
         """Pedido que cria/substitui o data file (com o arquivo junto, ou só o JSON apontando para o
         conteúdo temporário).
 
         - Conexão nova a cada tentativa: a do client pode ter ficado parada durante a extração ou o
           envio em pedaços, e a Qlik fecha conexões paradas (foi o que derrubou uma carga de 4 GB
           com o conteúdo já todo enviado).
-        - Se a conexão cair, tenta de novo. Num POST repetido, 409 pode ser o arquivo que a tentativa
-          anterior criou (a resposta é que se perdeu): confere pelo caminho e pelo tamanho.
+        - Com o arquivo junto: sem a repetição automática do urllib3 (cada uma reenviaria o arquivo
+          inteiro) e com tempo de envio proporcional ao tamanho (~0,5 MB/s no pior caso), não 30 s.
+        - Se a conexão cair, tenta de novo. Num POST repetido (ou depois de um envio direto que caiu,
+          ja_tentou), 409 pode ser o arquivo que a tentativa anterior criou (a resposta é que se perdeu):
+          confere pelo caminho e pelo tamanho.
         Retorna a resposta ou, nesse último caso, o dict do arquivo já criado.
         """
+        timeout = self.timeout
+        if arquivo:
+            timeout = (self.timeout[0], max(self.timeout[1], os.path.getsize(arquivo) / (512 * 1024)))
         for tentativa in range(1, tentativas + 1):
             self._session.close()  # descarta conexões paradas do pool: a próxima abre uma nova
+            sessao = self._sessao_sem_repeticao() if arquivo else self._session
             fh = open(arquivo, "rb") if arquivo else None
             try:
                 files = {"Json": (None, json.dumps(payload), "application/json")}
                 if fh:
                     files = {"File": (Path(arquivo).name, fh, "application/octet-stream"), **files}
-                resposta = self._session.request(metodo, url, files=files, timeout=self.timeout)
+                resposta = sessao.request(metodo, url, files=files, timeout=timeout)
             except (requests.ConnectionError, requests.Timeout) as e:
                 if tentativa == tentativas:
                     raise
@@ -428,7 +459,9 @@ class QlikQvd:
             finally:
                 if fh:
                     fh.close()
-            if resposta.status_code == 409 and tentativa > 1 and achar_criado:
+                if sessao is not self._session:
+                    sessao.close()
+            if resposta.status_code == 409 and (tentativa > 1 or ja_tentou) and achar_criado:
                 criado = achar_criado()
                 if criado and tamanho is not None and int(criado.get("size") or -1) == tamanho:
                     logger.info("%s: o arquivo já tinha sido criado pela tentativa anterior", criado.get("name"))
@@ -473,13 +506,8 @@ class QlikQvd:
         if connection_id:
             payload["connectionId"] = connection_id
 
-        if self._grande(local_file):
-            # acima de 500 MB: conteúdo em pedaços; o PUT leva só o JSON (pequeno, pode repetir)
-            payload["tempContentFileId"] = self._enviar_temporario(local_file, ao_enviar)
-        resposta = self._pedido_final(
-            "PUT", f"{self.base_url}/data-files/{file_id}", payload,
-            None if "tempContentFileId" in payload else local_file,
-        )
+        # arquivo grande (ou envio direto que caiu): conteúdo em pedaços; o PUT leva só o JSON
+        resposta = self._enviar_conteudo("PUT", f"{self.base_url}/data-files/{file_id}", payload, local_file, ao_enviar)
         if resposta.status_code == 404:
             raise FileNotFoundError(f"Data file {file_id} não existe mais na Qlik.")
         self._raise_for_status(resposta)
